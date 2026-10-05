@@ -23,9 +23,14 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 goto :failed
 )
 
-echo [SETUP] Installing/updating dependencies...
-".venv\Scripts\python.exe" -m pip install -e .
-if errorlevel 1 goto :failed
+".venv\Scripts\python.exe" -c "import fastapi, uvicorn, pybit, psycopg, price_action_bot" >nul 2>nul
+if errorlevel 1 (
+    echo [SETUP] Installing dependencies...
+    ".venv\Scripts\python.exe" -m pip install -e .
+    if errorlevel 1 goto :failed
+) else (
+    echo [SETUP] Dependencies are ready.
+)
 
 if not exist ".env" (
     if exist ".env - Copy.example" (
@@ -37,23 +42,15 @@ if not exist ".env" (
     )
 )
 
-rem Safe local overrides. Values in .env cannot override these settings.
-set "BYBIT_DEMO=true"
-set "ENABLE_ORDER_PLACEMENT=false"
-set "RUN_ENGINE_IN_WEB=true"
-set "DASHBOARD_ALLOW_INSECURE_LOCAL=true"
 set "PYTHONUTF8=1"
-
-echo.
-echo [SAFE MODE] Bybit Demo: ON
-echo [SAFE MODE] Order placement: OFF
-echo [DASHBOARD] http://127.0.0.1:8000
-echo [STOP] Press Ctrl+C in this window.
-echo.
-
-start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 3; Start-Process 'http://127.0.0.1:8000'"
-".venv\Scripts\python.exe" -m uvicorn price_action_bot.web:app --host 127.0.0.1 --port 8000
-exit /b %errorlevel%
+".venv\Scripts\python.exe" -m price_action_bot.local
+set "SERVER_EXIT=%ERRORLEVEL%"
+if not "%SERVER_EXIT%"=="0" (
+    echo.
+    echo [ERROR] The server stopped with exit code %SERVER_EXIT%.
+    pause
+)
+exit /b %SERVER_EXIT%
 
 :failed
 echo.

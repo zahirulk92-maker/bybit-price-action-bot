@@ -2,6 +2,7 @@
 .env - Copy.example
 .venv/
 __pycache__/
+*.egg-info/
 *.py[cod]
 *.db
 *.db-*
