@@ -44,6 +44,7 @@ class Settings:
     dashboard_username: str = "admin"
     dashboard_password: str = ""
     dashboard_allow_insecure_local: bool = False
+    run_engine_in_web: bool = False
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
@@ -70,6 +71,7 @@ class Settings:
             dashboard_username=os.getenv("DASHBOARD_USERNAME", "admin"),
             dashboard_password=os.getenv("DASHBOARD_PASSWORD", ""),
             dashboard_allow_insecure_local=_bool("DASHBOARD_ALLOW_INSECURE_LOCAL", False),
+            run_engine_in_web=_bool("RUN_ENGINE_IN_WEB", False),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         )

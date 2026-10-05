@@ -88,6 +88,19 @@ class Store:
                 (now,),
             )
 
+    def try_acquire_engine_lock(self) -> bool:
+        """Ensure only one web instance runs the engine during overlapping deploys."""
+        if not self._postgres:
+            return True
+        row = self._execute(
+            "SELECT pg_try_advisory_lock(2090163205) AS acquired", fetch="one"
+        )
+        return bool(self._dict(row).get("acquired", False))
+
+    def release_engine_lock(self) -> None:
+        if self._postgres:
+            self._execute("SELECT pg_advisory_unlock(2090163205)")
+
     @staticmethod
     def _dict(row: Any) -> dict[str, Any]:
         return dict(row) if row is not None else {}
@@ -222,4 +235,3 @@ class Store:
     def market_snapshots(self) -> list[dict[str, Any]]:
         rows = self._execute("SELECT * FROM market_snapshots ORDER BY symbol", fetch="all")
         return [self._dict(row) for row in rows]
-

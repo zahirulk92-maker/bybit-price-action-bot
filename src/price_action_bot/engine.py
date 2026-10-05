@@ -361,3 +361,6 @@ class TradingEngine:
             self._stop_event.wait(max(1.0, self.settings.poll_seconds - elapsed))
         self.store.heartbeat("stopped", mode=mode)
         LOGGER.warning("Bot stopped cleanly")
+
+    def stop(self) -> None:
+        self._stop_event.set()

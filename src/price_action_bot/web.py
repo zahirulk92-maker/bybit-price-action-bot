@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import secrets
+import logging
+import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -10,6 +13,9 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from .config import Settings
+from .engine import TradingEngine
+from .exchange import BybitGateway
+from .notify import TelegramNotifier
 from .store import Store
 
 
@@ -17,8 +23,53 @@ settings = Settings.from_env()
 store = Store(settings.database_path, settings.database_url)
 security = HTTPBasic(auto_error=False)
 static_dir = Path(__file__).with_name("static")
+LOGGER = logging.getLogger(__name__)
+engine_host_stop = threading.Event()
+engine_ref: dict[str, TradingEngine] = {}
 
-app = FastAPI(title="Price Action Control", docs_url=None, redoc_url=None)
+
+def _run_embedded_engine() -> None:
+    while not engine_host_stop.is_set():
+        if not store.try_acquire_engine_lock():
+            store.heartbeat("standby", reason="another instance owns the engine lock")
+            engine_host_stop.wait(5)
+            continue
+        try:
+            engine = TradingEngine(
+                settings,
+                BybitGateway(settings.api_key, settings.api_secret, settings.demo),
+                store,
+                TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id),
+            )
+            engine_ref["engine"] = engine
+            engine.run_forever()
+        except Exception:
+            LOGGER.exception("Embedded trading engine stopped unexpectedly")
+            store.heartbeat("error", reason="embedded engine stopped")
+        finally:
+            engine_ref.pop("engine", None)
+            store.release_engine_lock()
+        if not engine_host_stop.is_set():
+            engine_host_stop.wait(5)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    thread: threading.Thread | None = None
+    if settings.run_engine_in_web:
+        engine_host_stop.clear()
+        thread = threading.Thread(target=_run_embedded_engine, name="trading-engine", daemon=True)
+        thread.start()
+    try:
+        yield
+    finally:
+        engine_host_stop.set()
+        if engine := engine_ref.get("engine"):
+            engine.stop()
+        if thread:
+            thread.join(timeout=55)
+
+app = FastAPI(title="Price Action Control", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 def require_auth(credentials: HTTPBasicCredentials | None = Depends(security)) -> str:

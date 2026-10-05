@@ -81,12 +81,13 @@ Do not enable live mode based only on a few winning demo trades. API keys must n
 
 ## Render deployment
 
-`render.yaml` defines three Singapore-region resources:
+`render.yaml` defines two Singapore-region resources for the demo phase:
 
-- a free FastAPI dashboard web service;
-- an always-on background worker using the lowest paid worker plan;
+- a free FastAPI dashboard web service that also runs the trading engine in one process;
 - a free Postgres database shared by the dashboard and worker.
 
-The free Postgres database expires after 30 days and has no backups. Upgrade it before relying on retained history. The worker is deliberately separate from the free web service because free web services sleep when idle.
+Configure cron-job.org (or another external monitor) to request the public `/health` endpoint every 5 minutes. Render normally spins down a free web service after 15 minutes without inbound traffic. External pings reduce idle sleep, but Render can still restart or suspend a free instance, so this arrangement is for demo testing—not unattended live trading.
 
-Before applying the Blueprint, push this repository to GitHub/GitLab/Bitbucket. In Render, fill `DASHBOARD_PASSWORD`, `BYBIT_API_KEY`, and `BYBIT_API_SECRET`. The Blueprint starts with `ENABLE_ORDER_PLACEMENT=false`; verify signals before changing that worker environment variable to `true`.
+The free Postgres database expires after 30 days and has no backups. Upgrade or replace it before relying on retained history. A Postgres advisory lock ensures only one trading-engine loop runs if Render briefly overlaps instances during a deploy.
+
+Before applying the Blueprint, push this repository to GitHub/GitLab/Bitbucket. In Render, fill `DASHBOARD_PASSWORD`, `BYBIT_API_KEY`, and `BYBIT_API_SECRET`. The Blueprint starts with `ENABLE_ORDER_PLACEMENT=false`; verify signals before changing the web service environment variable to `true`.
