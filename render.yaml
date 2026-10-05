@@ -1,0 +1,88 @@
+services:
+  - type: web
+    name: bybit-pa-dashboard
+    runtime: python
+    plan: free
+    region: singapore
+    autoDeploy: true
+    buildCommand: pip install -e .
+    startCommand: uvicorn price_action_bot.web:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bybit-pa-db
+          property: connectionString
+      - key: DASHBOARD_USERNAME
+        value: admin
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: BYBIT_DEMO
+        value: "true"
+      - key: ENABLE_ORDER_PLACEMENT
+        value: "false"
+      - key: LEVERAGE
+        value: "3"
+      - key: RISK_PER_TRADE
+        value: "0.005"
+      - key: MAX_OPEN_POSITIONS
+        value: "3"
+      - key: MIN_REWARD_RISK
+        value: "1.5"
+      - key: VOLUME_MULTIPLIER
+        value: "1.2"
+      - key: UNIVERSE_SIZE
+        value: "10"
+
+  - type: worker
+    name: bybit-pa-worker
+    runtime: python
+    plan: 0.1c-256mb
+    region: singapore
+    autoDeploy: true
+    buildCommand: pip install -e .
+    startCommand: python -m price_action_bot
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bybit-pa-db
+          property: connectionString
+      - key: BYBIT_API_KEY
+        sync: false
+      - key: BYBIT_API_SECRET
+        sync: false
+      - key: BYBIT_DEMO
+        value: "true"
+      - key: ENABLE_ORDER_PLACEMENT
+        value: "false"
+      - key: LEVERAGE
+        value: "3"
+      - key: RISK_PER_TRADE
+        value: "0.005"
+      - key: MAX_OPEN_POSITIONS
+        value: "3"
+      - key: MAX_TOTAL_OPEN_RISK
+        value: "0.015"
+      - key: MIN_REWARD_RISK
+        value: "1.5"
+      - key: VOLUME_MULTIPLIER
+        value: "1.2"
+      - key: UNIVERSE_SIZE
+        value: "10"
+      - key: POLL_SECONDS
+        value: "20"
+      - key: LOG_LEVEL
+        value: INFO
+
+databases:
+  - name: bybit-pa-db
+    databaseName: bybit_pa
+    user: bybit_pa
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+    ipAllowList: []
+
+previews:
+  generation: none

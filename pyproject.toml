@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bybit-price-action-bot"
+version = "0.1.0"
+description = "Single-worker Bybit price-action demo trading bot"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pybit>=5.12,<6",
+  "psycopg[binary]>=3.2,<4",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.scripts]
+price-action-bot = "price_action_bot.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+price_action_bot = ["static/*"]
