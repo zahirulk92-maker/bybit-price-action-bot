@@ -19,6 +19,8 @@ All thresholds are environment settings and should be changed only after reviewi
 
 Requires Python 3.10 or newer.
 
+For the safest first local test, double-click `start.bat`. It creates `.venv`, installs dependencies, opens the dashboard at `http://127.0.0.1:8000`, and runs the scanner in Bybit Demo signal-only mode. Press `Ctrl+C` in its terminal to stop it.
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
