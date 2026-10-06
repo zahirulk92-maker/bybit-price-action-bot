@@ -132,12 +132,22 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "scanned_symbols": int(heartbeat_details.get("scanned_symbols", 0) or 0),
         "stale_after_ms": scanner_stale_after_ms,
     }
+    safety = {
+        "environment": "DEMO LOCKED" if settings.demo else "LIVE ACKNOWLEDGED",
+        "execution": "SIGNAL ONLY" if not settings.enable_order_placement else "ORDERS ENABLED",
+        "entries": "ENABLED" if store.trading_enabled() else "PAUSED",
+        "risk_guard": "ACTIVE",
+        "live_lock": not settings.demo and settings.live_trading_ack == "I_UNDERSTAND_LIVE_RISK",
+        "max_positions": settings.max_open_positions,
+        "max_total_risk": settings.max_total_open_risk,
+    }
     return {
         "environment": "demo" if settings.demo else "live",
         "execution": "orders" if settings.enable_order_placement else "signals",
         "worker_online": heartbeat_age is not None and heartbeat_age < 90_000,
         "heartbeat": heartbeat,
         "scanner": scanner,
+        "safety": safety,
         "trading_enabled": store.trading_enabled(),
         "markets": store.market_snapshots(),
         "decisions": store.decision_snapshots(),

@@ -87,6 +87,8 @@ class Settings:
             raise ValueError("MAX_OPEN_POSITIONS must be at least 1")
         if self.max_total_open_risk < self.risk_per_trade:
             raise ValueError("MAX_TOTAL_OPEN_RISK cannot be below RISK_PER_TRADE")
+        if self.max_total_open_risk > 0.05:
+            raise ValueError("MAX_TOTAL_OPEN_RISK cannot exceed 0.05")
         if self.universe_size < 2 or self.universe_size > 25:
             raise ValueError("UNIVERSE_SIZE must be between 2 and 25")
         if self.enable_order_placement and (not self.api_key or not self.api_secret):

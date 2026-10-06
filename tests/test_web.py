@@ -58,6 +58,8 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual(result["scanner"]["status"], "healthy")
         self.assertEqual(result["scanner"]["scanned_symbols"], 10)
         self.assertLess(result["scanner"]["last_scan_age_ms"], 10_000)
+        self.assertEqual(result["safety"]["execution"], "SIGNAL ONLY")
+        self.assertEqual(result["safety"]["risk_guard"], "ACTIVE")
 
 
 if __name__ == "__main__":

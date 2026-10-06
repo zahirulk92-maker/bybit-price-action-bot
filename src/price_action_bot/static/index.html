@@ -112,6 +112,11 @@
     .setting { background:var(--panel); padding:13px; }
     .setting span { display:block; color:var(--muted); font-size:.64rem; text-transform:uppercase; letter-spacing:.05em; }
     .setting strong { display:block; margin-top:4px; font-size:.85rem; }
+    .safety-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:1px; margin-top:1px; background:var(--line); }
+    .safety-item { background:var(--panel); padding:10px 13px; }
+    .safety-item span { display:block; color:var(--muted); font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+    .safety-item strong { display:block; margin-top:3px; font-size:.75rem; }
+    .safety-item.ok strong { color:var(--mint); } .safety-item.warn strong { color:var(--amber); } .safety-item.danger strong { color:var(--red); }
     footer { color:#58788a; font-size:.7rem; margin:16px 2px 0; }
     @media(max-width:1000px){ .stats{grid-template-columns:repeat(3,minmax(0,1fr))}.workspace{grid-template-columns:1fr}.watch-panel{min-height:0}.watch-list{display:grid;grid-template-columns:repeat(2,1fr)}.watch-row:nth-child(odd){border-right:1px solid var(--line)} }
     @media(max-width:720px){ .shell{padding:14px}.stats{grid-template-columns:repeat(2,1fr)}.lower-grid{grid-template-columns:1fr}.settings,.decision-grid{grid-template-columns:repeat(2,1fr)}.decision-item:nth-child(3n){border-right:1px solid var(--line)}.decision-item:nth-child(2n){border-right:0}.decision-item:nth-last-child(-n+3){border-bottom:1px solid var(--line)}.decision-item:nth-last-child(-n+2){border-bottom:0}.chart-area{min-height:360px}#chartCanvas{height:350px}.tool-group{border-right:0;padding-right:0} }
@@ -193,7 +198,7 @@
 
     <section class="lower-grid">
       <section class="panel"><div class="panel-head"><h2 class="panel-title">Activity</h2><span class="panel-note">worker events</span></div><ul id="events" class="event-list"><li class="empty">No events yet.</li></ul></section>
-      <section class="panel"><div class="panel-head"><h2 class="panel-title">Strategy guardrails</h2><span class="panel-note">read only</span></div><div id="settings" class="settings"></div></section>
+      <section class="panel"><div class="panel-head"><h2 class="panel-title">Safety controls</h2><span class="panel-note">guardrails · read only</span></div><div id="settings" class="settings"></div><div id="safetyControls" class="safety-grid"></div></section>
     </section>
     <footer>Worker control pauses new entries only. Existing positions continue to be protected and managed.</footer>
   </div>
@@ -231,6 +236,7 @@
       renderJournal();
       $('tradeRows').innerHTML=data.open_trades.length?data.open_trades.map(row=>{const t=row.trade;return `<tr><td class="symbol">${esc(row.symbol)}</td><td class="${t.side==='Buy'?'bullish':'bearish'}">${esc(t.side)}</td><td>${fmt(t.entry)}</td><td>${fmt(t.stop)}</td><td>${fmt(t.target)}</td><td>${fmt(t.qty)}</td><td><span class="signal">${esc(row.status)}</span></td></tr>`;}).join(""):'<tr><td colspan="7" class="empty">No positions — waiting for a confirmed 5m trigger.</td></tr>';
       const s=data.strategy; $('settings').innerHTML=[["Leverage",`${s.leverage}×`],["Risk / trade",`${(s.risk_per_trade*100).toFixed(2)}%`],["Minimum R:R",`1:${s.min_reward_risk}`],["Volume gate",`${s.volume_multiplier}×`],["Max positions",s.max_positions],["Universe",s.universe_size]].map(([l,v])=>`<div class="setting"><span>${l}</span><strong>${v}</strong></div>`).join("");
+      const safety=data.safety||{}; const safetyItems=[["Environment",safety.environment,safety.environment==='DEMO LOCKED'?'ok':'warn'],["Execution",safety.execution,safety.execution==='SIGNAL ONLY'?'ok':'warn'],["Entry gate",safety.entries,safety.entries==='ENABLED'?'ok':'warn'],["Risk guard",safety.risk_guard,'ok'],["Max total risk",`${(Number(safety.max_total_risk||0)*100).toFixed(2)}%`,'ok'],["Live lock",safety.live_lock?'acknowledged':'not active',safety.live_lock?'warn':'ok']]; $('safetyControls').innerHTML=safetyItems.map(([label,value,kind])=>`<div class="safety-item ${kind}"><span>${label}</span><strong>${esc(value)}</strong></div>`).join("");
       $('events').innerHTML=data.events.length?data.events.map(e=>{const d=Object.entries(e.payload).slice(0,3).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join(', '):v}`).join(' · ');return `<li class="event"><strong>${esc(e.event_type.replaceAll('_',' '))}${e.symbol?` · ${esc(e.symbol)}`:''}</strong><p>${esc(d||'No additional details')} · ${ago(e.created_at_ms)}</p></li>`;}).join(""):'<li class="empty">No events yet.</li>';
     }
 
