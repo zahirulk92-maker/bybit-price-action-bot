@@ -28,7 +28,7 @@
     .control.pause { background:transparent; color:var(--amber); border-color:rgba(255,200,90,.55); }
     .control:disabled { opacity:.55; cursor:wait; }
     .notice { display:none; margin-bottom:14px; padding:11px 14px; border:1px solid rgba(255,100,118,.3); border-radius:10px; color:#ffb5bd; background:rgba(255,100,118,.09); }
-    .stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:14px; }
+    .stats { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:14px; }
     .stat,.panel { background:rgba(11,27,39,.91); border:1px solid var(--line); border-radius:var(--radius); }
     .stat { min-height:88px; padding:13px 15px; }
     .label { color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; }
@@ -109,7 +109,7 @@
     .setting span { display:block; color:var(--muted); font-size:.64rem; text-transform:uppercase; letter-spacing:.05em; }
     .setting strong { display:block; margin-top:4px; font-size:.85rem; }
     footer { color:#58788a; font-size:.7rem; margin:16px 2px 0; }
-    @media(max-width:1000px){ .workspace{grid-template-columns:1fr}.watch-panel{min-height:0}.watch-list{display:grid;grid-template-columns:repeat(2,1fr)}.watch-row:nth-child(odd){border-right:1px solid var(--line)} }
+    @media(max-width:1000px){ .stats{grid-template-columns:repeat(3,minmax(0,1fr))}.workspace{grid-template-columns:1fr}.watch-panel{min-height:0}.watch-list{display:grid;grid-template-columns:repeat(2,1fr)}.watch-row:nth-child(odd){border-right:1px solid var(--line)} }
     @media(max-width:720px){ .shell{padding:14px}.stats{grid-template-columns:repeat(2,1fr)}.lower-grid{grid-template-columns:1fr}.settings,.decision-grid{grid-template-columns:repeat(2,1fr)}.decision-item:nth-child(3n){border-right:1px solid var(--line)}.decision-item:nth-child(2n){border-right:0}.decision-item:nth-last-child(-n+3){border-bottom:1px solid var(--line)}.decision-item:nth-last-child(-n+2){border-bottom:0}.chart-area{min-height:360px}#chartCanvas{height:350px}.tool-group{border-right:0;padding-right:0} }
     @media(max-width:520px){ header{align-items:flex-start}.eyebrow{display:none}.header-actions{flex-direction:column-reverse;align-items:stretch}.badge{justify-content:center}.watch-list{grid-template-columns:1fr}.watch-row:nth-child(odd){border-right:0}.chart-area{padding-inline:6px}.panel-head{align-items:flex-start}.timeframes{margin-left:auto} }
   </style>
@@ -127,6 +127,7 @@
       <div class="stat"><span class="label">Universe</span><strong id="universeCount" class="stat-value">—</strong><span class="sub">dynamic USDT perpetuals</span></div>
       <div class="stat"><span class="label">Open positions</span><strong id="positionCount" class="stat-value">—</strong><span id="positionMeta" class="sub">maximum 3</span></div>
       <div class="stat"><span class="label">Armed signals</span><strong id="armedCount" class="stat-value">—</strong><span id="armedMeta" class="sub">awaiting price trigger</span></div>
+      <div class="stat"><span class="label">Scanner heartbeat</span><strong id="scannerState" class="stat-value">—</strong><span id="scannerMeta" class="sub">waiting for first scan</span></div>
     </section>
 
     <section class="workspace">
@@ -195,6 +196,7 @@
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
     const ago = ms => { if(!ms)return "never"; const s=Math.max(0,Math.round((Date.now()-ms)/1000)); return s<60?`${s}s ago`:s<3600?`${Math.floor(s/60)}m ago`:`${Math.floor(s/3600)}h ago`; };
+    const until = ms => { if(!ms)return "—"; const s=Math.max(0,Math.ceil((ms-Date.now())/1000)); return s<60?`in ${s}s`: `in ${Math.ceil(s/60)}m`; };
     const tone = bias => ["bullish","bearish"].includes(String(bias).toLowerCase())?String(bias).toLowerCase():"range";
 
     function renderStatus(data){
@@ -203,6 +205,9 @@
       $('environment').textContent=data.environment.toUpperCase(); $('execution').textContent=data.execution==="orders"?"demo order execution":"signal-only mode";
       $('universeCount').textContent=data.markets.length; $('positionCount').textContent=open.length; $('positionMeta').textContent=`maximum ${data.strategy.max_positions}`;
       $('armedCount').textContent=armed.length; $('armedMeta').textContent=armed.length?armed.map(m=>m.symbol).join(", "):"awaiting price trigger";
+      const scanner=data.scanner||{}; const scannerTone=scanner.status==='healthy'?'bullish':scanner.status==='error'||scanner.status==='stale'?'bearish':'range';
+      $('scannerState').textContent=String(scanner.status||'starting').toUpperCase(); $('scannerState').className=`stat-value ${scannerTone}`;
+      $('scannerMeta').textContent=scanner.last_scan_at_ms?`last ${ago(scanner.last_scan_at_ms)} · ${until(scanner.next_scan_at_ms)}`:'waiting for first scan';
       $('workerDot').className=`dot ${data.worker_online?'online':'offline'}`; $('workerText').textContent=data.worker_online?(state.enabled?"Worker online":"Entries paused"):"Worker offline";
       $('lastUpdate').textContent=data.heartbeat.updated_at_ms?ago(data.heartbeat.updated_at_ms):"Waiting";
       const button=$('controlButton'); button.disabled=false; button.textContent=state.enabled?"Pause bot":"Resume bot"; button.className=`control ${state.enabled?'pause':''}`;

@@ -114,14 +114,30 @@ def dashboard(_: str = Depends(require_auth)) -> FileResponse:
 @app.get("/api/status")
 def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
     heartbeat = store.get_heartbeat()
-    heartbeat_age = (
-        int(time.time() * 1000) - int(heartbeat.get("updated_at_ms", 0)) if heartbeat else None
-    )
+    now_ms = int(time.time() * 1000)
+    heartbeat_age = now_ms - int(heartbeat.get("updated_at_ms", 0)) if heartbeat else None
+    heartbeat_details = heartbeat.get("details", {}) if heartbeat else {}
+    last_scan_at_ms = int(heartbeat_details.get("last_scan_at_ms", 0) or 0)
+    scanner_age = now_ms - last_scan_at_ms if last_scan_at_ms else None
+    scanner_status = str(heartbeat_details.get("scanner_status", "starting"))
+    scanner_stale_after_ms = max(90_000, settings.poll_seconds * 3_000)
+    if scanner_status == "healthy" and scanner_age is not None and scanner_age > scanner_stale_after_ms:
+        scanner_status = "stale"
+    scanner = {
+        "status": scanner_status,
+        "last_scan_at_ms": last_scan_at_ms,
+        "last_scan_age_ms": scanner_age,
+        "next_scan_at_ms": int(heartbeat_details.get("next_scan_at_ms", 0) or 0),
+        "last_scan_duration_ms": int(heartbeat_details.get("last_scan_duration_ms", 0) or 0),
+        "scanned_symbols": int(heartbeat_details.get("scanned_symbols", 0) or 0),
+        "stale_after_ms": scanner_stale_after_ms,
+    }
     return {
         "environment": "demo" if settings.demo else "live",
         "execution": "orders" if settings.enable_order_placement else "signals",
         "worker_online": heartbeat_age is not None and heartbeat_age < 90_000,
         "heartbeat": heartbeat,
+        "scanner": scanner,
         "trading_enabled": store.trading_enabled(),
         "markets": store.market_snapshots(),
         "decisions": store.decision_snapshots(),

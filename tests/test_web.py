@@ -1,4 +1,5 @@
 import unittest
+import time
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -34,6 +35,29 @@ class ChartApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             web.api_chart("BTCUSDT", "1", 160, "test")
         self.assertEqual(raised.exception.status_code, 400)
+
+    def test_status_exposes_scanner_heartbeat(self):
+        now = int(time.time() * 1000)
+        heartbeat = {
+            "status": "running",
+            "updated_at_ms": now,
+            "details": {
+                "scanner_status": "healthy",
+                "last_scan_at_ms": now - 800,
+                "next_scan_at_ms": now + 19_200,
+                "last_scan_duration_ms": 800,
+                "scanned_symbols": 10,
+            },
+        }
+        with patch.object(web.store, "get_heartbeat", return_value=heartbeat), patch.object(
+            web.store, "trading_enabled", return_value=True
+        ), patch.object(web.store, "market_snapshots", return_value=[]), patch.object(
+            web.store, "recent_trades", return_value=[]
+        ), patch.object(web.store, "recent_events", return_value=[]):
+            result = web.api_status("test")
+        self.assertEqual(result["scanner"]["status"], "healthy")
+        self.assertEqual(result["scanner"]["scanned_symbols"], 10)
+        self.assertLess(result["scanner"]["last_scan_age_ms"], 10_000)
 
 
 if __name__ == "__main__":

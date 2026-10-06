@@ -431,24 +431,49 @@ class TradingEngine:
         self.refresh_universe(force=True)
         mode = "DEMO ORDERS" if self.settings.enable_order_placement else "SIGNAL ONLY"
         LOGGER.warning("Bot started in %s mode", mode)
+        started_at_ms = int(time.time() * 1000)
         self.store.heartbeat(
-            "running", mode=mode, symbols=self.symbols, entries_enabled=self.store.trading_enabled()
+            "running",
+            mode=mode,
+            symbols=self.symbols,
+            entries_enabled=self.store.trading_enabled(),
+            scanner_status="starting",
+            last_scan_at_ms=0,
+            next_scan_at_ms=started_at_ms,
         )
         while not self._stop_event.is_set():
             started = time.monotonic()
             try:
                 self.run_once()
+                finished_at_ms = int(time.time() * 1000)
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                next_scan_at_ms = finished_at_ms + max(
+                    1_000, int((self.settings.poll_seconds - (elapsed_ms / 1000)) * 1000)
+                )
                 self.store.heartbeat(
                     "running",
                     mode=mode,
                     symbols=self.symbols,
                     entries_enabled=self.store.trading_enabled(),
                     open_positions=len(self.trades),
+                    scanner_status="healthy",
+                    scanned_symbols=len(self.symbols),
+                    last_scan_at_ms=finished_at_ms,
+                    last_scan_duration_ms=elapsed_ms,
+                    next_scan_at_ms=next_scan_at_ms,
                 )
             except Exception:
                 LOGGER.exception("Engine cycle failed")
                 self.store.event("ENGINE_CYCLE_ERROR")
-                self.store.heartbeat("error", mode=mode)
+                failed_at_ms = int(time.time() * 1000)
+                self.store.heartbeat(
+                    "error",
+                    mode=mode,
+                    symbols=self.symbols,
+                    scanner_status="error",
+                    last_scan_at_ms=failed_at_ms,
+                    next_scan_at_ms=failed_at_ms + self.settings.poll_seconds * 1000,
+                )
             elapsed = time.monotonic() - started
             self._stop_event.wait(max(1.0, self.settings.poll_seconds - elapsed))
         self.store.heartbeat("stopped", mode=mode)
