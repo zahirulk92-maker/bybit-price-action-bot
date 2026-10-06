@@ -21,6 +21,28 @@ FIVE_MINUTES_MS = 5 * 60 * 1000
 UNIVERSE_REFRESH_MS = 24 * 60 * 60 * 1000
 
 
+def _side_label(side: str) -> str:
+    return "🟢 LONG / BUY" if side == "Buy" else "🔴 SHORT / SELL"
+
+
+def _signal_message(symbol: str, side: str, pattern: str, trigger: float, stop: float, target: float, volume_ratio: float) -> str:
+    rr = reward_risk(trigger, stop, target, side) if target > 0 else 0.0
+    return (
+        "📡 SIGNAL ARMED\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"📌 Pair: {symbol}\n"
+        f"📊 Bias: {_side_label(side)}\n"
+        f"🕯 Pattern: {pattern.replace('_', ' ')}\n"
+        f"🎯 Trigger: {trigger:.8g}\n"
+        f"🛡 Stop loss: {stop:.8g}\n"
+        f"🏁 Zone target: {target:.8g}\n"
+        f"⚖️ R:R: 1:{rr:.2f}\n"
+        f"📈 Volume: {volume_ratio:.2f}× average\n"
+        "⏳ Status: Waiting for trigger + confirmation\n"
+        "⚠️ No entry before confirmation"
+    )
+
+
 def _set_check(
     decision: dict[str, object], key: str, status: str, detail: str
 ) -> None:
@@ -299,9 +321,7 @@ class TradingEngine:
             volume_ratio=pattern.volume_ratio,
         )
         self.notifier.send(
-            f"ARMED {symbol} {pattern.side} {pattern.name}\n"
-            f"trigger={pattern.trigger} stop={pattern.stop} target={target}\n"
-            f"volume={pattern.volume_ratio:.2f}x"
+            _signal_message(symbol, pattern.side, pattern.name, pattern.trigger, pattern.stop, target, pattern.volume_ratio)
         )
         LOGGER.info(
             "%s armed %s %s trigger=%s stop=%s target=%s volume=%.2fx",
@@ -333,8 +353,15 @@ class TradingEngine:
             )
             LOGGER.warning("Signal only: %s %s (order placement disabled)", armed.pattern.side, symbol)
             self.notifier.send(
-                f"SIGNAL ONLY {symbol} {armed.pattern.side}\n"
-                f"entry~{expected_entry} stop={armed.pattern.stop} target={armed.target}"
+                "🧪 DEMO SIGNAL ONLY\n"
+                "━━━━━━━━━━━━━━━━\n"
+                f"📌 Pair: {symbol}\n"
+                f"📊 Direction: {_side_label(armed.pattern.side)}\n"
+                f"🕯 Pattern: {armed.pattern.name.replace('_', ' ')}\n"
+                f"💵 Entry estimate: {expected_entry:.8g}\n"
+                f"🛡 Stop loss: {armed.pattern.stop:.8g}\n"
+                f"🏁 Target zone: {armed.target:.8g}\n"
+                "✅ Entry gate passed; demo order placement is enabled"
             )
             return
 
@@ -388,9 +415,17 @@ class TradingEngine:
         self.store.event("POSITION_OPENED", symbol, **{k: str(v) for k, v in trade.__dict__.items()})
         LOGGER.warning("Opened %s %s qty=%s entry=%s", trade.side, symbol, trade.qty, trade.entry)
         self.notifier.send(
-            f"OPENED {symbol} {trade.side} qty={trade.qty}\n"
-            f"stop={trade.stop} TP1={trade.one_r_target} (50%) "
-            f"TP2={trade.tp2_target} (30%) TP3={trade.target} (20%)"
+            "✅ POSITION OPENED · DEMO\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"📌 Pair: {symbol}\n"
+            f"📊 Direction: {_side_label(trade.side)}\n"
+            f"💵 Entry: {trade.entry:.8g}\n"
+            f"📦 Quantity: {trade.qty:.8g}\n"
+            f"🛡 SL: {trade.stop:.8g}\n"
+            f"🎯 TP1: {trade.one_r_target:.8g} · 50%\n"
+            f"🎯 TP2: {trade.tp2_target:.8g} · 30%\n"
+            f"🎯 TP3: {trade.target:.8g} · 20% runner\n"
+            "🔁 Reversal protection: ACTIVE"
         )
 
     def _manage_open_trades(self, prices: dict[str, float]) -> None:
@@ -403,7 +438,7 @@ class TradingEngine:
                     self.store.event("POSITION_CLOSED", symbol)
                     self.store.close_trade(symbol)
                     self.trades.pop(symbol, None)
-                    self.notifier.send(f"CLOSED {symbol}")
+                    self.notifier.send(f"✅ POSITION CLOSED\n📌 Pair: {symbol}\nℹ️ Exchange position is no longer open")
                     continue
                 price = prices.get(symbol) or float(position["markPrice"])
                 if trade.tp2_target <= 0:
@@ -430,8 +465,14 @@ class TradingEngine:
                     self.store.close_trade(symbol)
                     self.trades.pop(symbol, None)
                     self.notifier.send(
-                        f"EARLY EXIT {symbol} {trade.side}\n"
-                        f"reason={reversal['reason']} volume={float(reversal['volume_ratio']):.2f}x"
+                        "⚠️ EARLY EXIT · REVERSAL\n"
+                        "━━━━━━━━━━━━━━━━\n"
+                        f"📌 Pair: {symbol}\n"
+                        f"📊 Position: {_side_label(trade.side)}\n"
+                        f"🕯 Opposite pattern: {reversal['pattern'].replace('_', ' ')}\n"
+                        f"📈 Volume: {float(reversal['volume_ratio']):.2f}× average\n"
+                        f"📝 Reason: {reversal['reason']}\n"
+                        "🛑 Remaining position closed for protection"
                     )
                     continue
                 reached_one_r = (
@@ -454,7 +495,11 @@ class TradingEngine:
                     self.store.save_trade(trade)
                     self.store.event("PARTIAL_TP", symbol, price=price, new_stop=new_stop)
                     self.notifier.send(
-                        f"TP1 {symbol} at {price} (50%)\nremaining stop={new_stop}"
+                        "💰 TP1 HIT · 50% CLOSED\n"
+                        f"📌 Pair: {symbol}\n"
+                        f"💵 Fill: {price:.8g}\n"
+                        f"🛡 New stop: {new_stop:.8g}\n"
+                        "🔒 Risk reduced; runner remains active"
                     )
 
                 reached_tp2 = (
@@ -468,7 +513,12 @@ class TradingEngine:
                     trade.state = SignalState.PARTIAL_TP
                     self.store.save_trade(trade)
                     self.store.event("PARTIAL_TP2", symbol, price=price, qty_fraction=0.30)
-                    self.notifier.send(f"TP2 {symbol} at {price} (30%)")
+                    self.notifier.send(
+                        "💰 TP2 HIT · 30% CLOSED\n"
+                        f"📌 Pair: {symbol}\n"
+                        f"💵 Fill: {price:.8g}\n"
+                        "📌 20% runner remains for TP3"
+                    )
 
                 reached_tp3 = (
                     trade.side == "Buy" and price >= trade.target
@@ -482,7 +532,12 @@ class TradingEngine:
                     self.store.close_trade(symbol)
                     self.trades.pop(symbol, None)
                     self.store.event("TP3_CLOSED", symbol, price=price, qty=remaining_qty)
-                    self.notifier.send(f"TP3 {symbol} at {price} (20% runner)")
+                    self.notifier.send(
+                        "🏁 TP3 HIT · TRADE COMPLETE\n"
+                        f"📌 Pair: {symbol}\n"
+                        f"💵 Final fill: {price:.8g}\n"
+                        "✅ 100% planned position exited"
+                    )
                     continue
 
                 risk = abs(trade.entry - trade.one_r_target)
