@@ -361,13 +361,17 @@ class TradingEngine:
             position = self.gateway.wait_for_position(symbol)
             actual_entry = float(position["avgPrice"])
             actual_qty = float(position["size"])
-            self.gateway.set_protection(symbol, armed.pattern.stop, armed.target)
+            # Keep only the exchange-side stop; staged targets are managed below.
+            self.gateway.set_protection(symbol, armed.pattern.stop)
         except Exception:
             LOGGER.exception("Protection failed after entry; emergency-closing %s", symbol)
             self.gateway.close_partial(symbol, armed.pattern.side, qty)
             self.store.event("EMERGENCY_CLOSE_UNPROTECTED", symbol, order_id=order_id)
             raise
 
+        tp1 = one_r_price(actual_entry, armed.pattern.stop, armed.pattern.side)
+        risk = abs(actual_entry - tp1)
+        tp2 = actual_entry + (1.5 * risk if armed.pattern.side == "Buy" else -1.5 * risk)
         trade = Trade(
             symbol=symbol,
             side=armed.pattern.side,
@@ -375,8 +379,9 @@ class TradingEngine:
             entry=actual_entry,
             stop=armed.pattern.stop,
             target=armed.target,
-            one_r_target=one_r_price(actual_entry, armed.pattern.stop, armed.pattern.side),
+            one_r_target=tp1,
             order_id=order_id,
+            tp2_target=tp2,
         )
         self.trades[symbol] = trade
         self.store.save_trade(trade)
@@ -384,7 +389,8 @@ class TradingEngine:
         LOGGER.warning("Opened %s %s qty=%s entry=%s", trade.side, symbol, trade.qty, trade.entry)
         self.notifier.send(
             f"OPENED {symbol} {trade.side} qty={trade.qty}\n"
-            f"entry={trade.entry} stop={trade.stop} target={trade.target}"
+            f"stop={trade.stop} TP1={trade.one_r_target} (50%) "
+            f"TP2={trade.tp2_target} (30%) TP3={trade.target} (20%)"
         )
 
     def _manage_open_trades(self, prices: dict[str, float]) -> None:
@@ -400,6 +406,12 @@ class TradingEngine:
                     self.notifier.send(f"CLOSED {symbol}")
                     continue
                 price = prices.get(symbol) or float(position["markPrice"])
+                if trade.tp2_target <= 0:
+                    risk = abs(trade.entry - trade.one_r_target)
+                    trade.tp2_target = trade.entry + (
+                        1.5 * risk if trade.side == "Buy" else -1.5 * risk
+                    )
+                    self.store.save_trade(trade)
                 management_candles = self.gateway.candles(symbol, "5", 40)
                 reversal = detect_trade_reversal(
                     management_candles, trade.side, self.settings.volume_multiplier
@@ -428,7 +440,7 @@ class TradingEngine:
                     trade.side == "Sell" and price <= trade.one_r_target
                 )
                 if reached_one_r and not trade.partial_taken:
-                    self.gateway.close_partial(symbol, trade.side, trade.qty / 2)
+                    self.gateway.close_partial(symbol, trade.side, trade.qty * 0.50)
                     fee_buffer = trade.entry * 0.0007
                     new_stop = (
                         trade.entry + fee_buffer
@@ -442,8 +454,36 @@ class TradingEngine:
                     self.store.save_trade(trade)
                     self.store.event("PARTIAL_TP", symbol, price=price, new_stop=new_stop)
                     self.notifier.send(
-                        f"PARTIAL TP {symbol} at {price}\nremaining stop={new_stop}"
+                        f"TP1 {symbol} at {price} (50%)\nremaining stop={new_stop}"
                     )
+
+                reached_tp2 = (
+                    trade.side == "Buy" and price >= trade.tp2_target
+                ) or (
+                    trade.side == "Sell" and price <= trade.tp2_target
+                )
+                if trade.partial_taken and reached_tp2 and not trade.tp2_taken:
+                    self.gateway.close_partial(symbol, trade.side, trade.qty * 0.30)
+                    trade.tp2_taken = True
+                    trade.state = SignalState.PARTIAL_TP
+                    self.store.save_trade(trade)
+                    self.store.event("PARTIAL_TP2", symbol, price=price, qty_fraction=0.30)
+                    self.notifier.send(f"TP2 {symbol} at {price} (30%)")
+
+                reached_tp3 = (
+                    trade.side == "Buy" and price >= trade.target
+                ) or (
+                    trade.side == "Sell" and price <= trade.target
+                )
+                if trade.tp2_taken and reached_tp3 and not trade.tp3_taken:
+                    remaining_qty = float(position.get("size") or trade.qty * 0.20)
+                    self.gateway.close_partial(symbol, trade.side, remaining_qty)
+                    trade.tp3_taken = True
+                    self.store.close_trade(symbol)
+                    self.trades.pop(symbol, None)
+                    self.store.event("TP3_CLOSED", symbol, price=price, qty=remaining_qty)
+                    self.notifier.send(f"TP3 {symbol} at {price} (20% runner)")
+                    continue
 
                 risk = abs(trade.entry - trade.one_r_target)
                 reached_trailing = (

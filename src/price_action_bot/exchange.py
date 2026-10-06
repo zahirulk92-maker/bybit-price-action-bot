@@ -144,22 +144,17 @@ class BybitGateway:
             time.sleep(0.4)
         raise RuntimeError(f"Order accepted but no position appeared for {symbol}")
 
-    def set_protection(self, symbol: str, stop: float, target: float) -> None:
+    def set_protection(self, symbol: str, stop: float, target: float | None = None) -> None:
         rules = self.instrument_rules(symbol)
         stop = floor_to_step(stop, rules.tick_size)
-        target = floor_to_step(target, rules.tick_size)
-        self._check(
-            self.session.set_trading_stop(
-                category="linear",
-                symbol=symbol,
-                tpslMode="Full",
-                positionIdx=0,
-                stopLoss=str(stop),
-                takeProfit=str(target),
-                slTriggerBy="MarkPrice",
-                tpTriggerBy="MarkPrice",
-            )
-        )
+        payload = {
+            "category": "linear", "symbol": symbol, "tpslMode": "Full",
+            "positionIdx": 0, "stopLoss": str(stop), "slTriggerBy": "MarkPrice",
+        }
+        if target is not None:
+            payload["takeProfit"] = str(floor_to_step(target, rules.tick_size))
+            payload["tpTriggerBy"] = "MarkPrice"
+        self._check(self.session.set_trading_stop(**payload))
 
     def move_stop(self, symbol: str, stop: float) -> None:
         rules = self.instrument_rules(symbol)

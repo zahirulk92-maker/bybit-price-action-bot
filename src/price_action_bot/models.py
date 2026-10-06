@@ -99,4 +99,6 @@ class Trade:
     state: SignalState = SignalState.POSITION_OPEN
     order_id: str = ""
     partial_taken: bool = False
-
+    tp2_target: float = 0.0
+    tp2_taken: bool = False
+    tp3_taken: bool = False
