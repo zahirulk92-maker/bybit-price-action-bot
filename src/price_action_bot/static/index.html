@@ -210,8 +210,8 @@
 
   <script>
     const $ = id => document.getElementById(id);
-    const state = { enabled:false, markets:[], decisions:[], journal:[], selected:"", interval:"5", chart:null, request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
-    const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff" };
+    const state = { enabled:false, markets:[], decisions:[], journal:[], openTrades:[], selected:"", interval:"5", chart:null, request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
+    const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff", amber:"#ffc85a" };
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
     const ago = ms => { if(!ms)return "never"; const s=Math.max(0,Math.round((Date.now()-ms)/1000)); return s<60?`${s}s ago`:s<3600?`${Math.floor(s/60)}m ago`:`${Math.floor(s/3600)}h ago`; };
@@ -221,6 +221,8 @@
     function renderStatus(data){
       state.enabled=data.trading_enabled; state.markets=data.markets; state.decisions=data.decisions||[]; state.journal=data.signal_journal||[];
       const open=data.open_trades.filter(row=>row.status==="open"), armed=data.markets.filter(m=>m.signal_state==="ARMED");
+      state.openTrades=open;
+      if(state.chart) drawChart();
       $('environment').textContent=data.environment.toUpperCase(); $('execution').textContent=data.execution==="orders"?"demo order execution":"signal-only mode";
       $('universeCount').textContent=data.markets.length; $('positionCount').textContent=open.length; $('positionMeta').textContent=`maximum ${data.strategy.max_positions}`;
       $('armedCount').textContent=armed.length; $('armedMeta').textContent=armed.length?armed.map(m=>m.symbol).join(", "):"awaiting price trigger";
@@ -307,6 +309,11 @@
       const series=(kind,p)=>kind==='ema'?ema(values,p):sma(values,p),lineColors={9:'#68b7ff',21:'#ffc85a',50:'#c48cff',200:'#ff8f70'};
       [['ma',state.layers.ma],['ema',state.layers.ema]].forEach(([kind,periods])=>periods.forEach(p=>{const vals=series(kind,p);ctx.strokeStyle=lineColors[p];ctx.lineWidth=1.5;ctx.globalAlpha=.9;ctx.beginPath();let started=false;vals.slice(start).forEach((v,i)=>{if(v===null)return;const px=x(i),py=y(v);if(!started){ctx.moveTo(px,py);started=true;}else ctx.lineTo(px,py);});if(started)ctx.stroke();ctx.globalAlpha=1;}));
       const maxVol=Math.max(...candles.map(c=>c.volume),1);candles.forEach((c,i)=>{const xx=x(i),up=c.close>=c.open,color=up?colors.mint:colors.red;ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xx,y(c.high));ctx.lineTo(xx,y(c.low));ctx.stroke();const y1=y(Math.max(c.open,c.close)),y2=y(Math.min(c.open,c.close));ctx.fillStyle=color;ctx.fillRect(xx-body/2,y1,body,Math.max(1,y2-y1));if(state.layers.volume){const vh=c.volume/maxVol*(volumeH-10);ctx.globalAlpha=.32;ctx.fillRect(xx-body/2,priceBottom+gap+volumeH-vh,body,vh);ctx.globalAlpha=1;}const p=pattern(candles,i);if((state.layers.single&&p.single)||(state.layers.double&&p.double)){ctx.fillStyle=p.double?.includes('Bearish')||p.single==='Shooting Star'?colors.red:colors.mint;ctx.beginPath();ctx.arc(xx,y(c.high)+ (p.single==='Hammer'?8:-8),3,0,Math.PI*2);ctx.fill();}});
+      const activeTrade=state.openTrades.find(row=>row.symbol===state.selected)?.trade;
+      if(activeTrade){
+        const tradeLines=[['ENTRY',activeTrade.entry,colors.blue],['SL',activeTrade.stop,colors.red],['TP1',activeTrade.one_r_target,colors.mint],['TP2',activeTrade.tp2_target,'#c48cff'],['TP3',activeTrade.target,colors.amber]];
+        ctx.font='10px system-ui'; tradeLines.forEach(([label,price,color])=>{if(!Number.isFinite(Number(price))||Number(price)<=0)return;const yy=y(Number(price));ctx.strokeStyle=color;ctx.globalAlpha=.82;ctx.setLineDash(label==='SL'?[3,3]:[7,4]);ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;ctx.fillStyle=color;ctx.fillRect(left+4,yy-9,Math.max(34,ctx.measureText(`${label} ${fmt(price)}`).width+10),18);ctx.fillStyle='#06131c';ctx.textAlign='left';ctx.fillText(`${label} ${fmt(price)}`,left+9,yy);});
+      }
       if(state.layers.volume){ctx.strokeStyle=colors.grid;ctx.beginPath();ctx.moveTo(left,priceBottom+gap);ctx.lineTo(w-right,priceBottom+gap);ctx.stroke();ctx.fillStyle=colors.text;ctx.fillText('Volume',left,priceBottom+14);}
       if(state.layers.rsi){const rv=rsi(values),rTop=priceBottom+volumeH+8,rBottom=h-bottom-3,ry=v=>rTop+(100-v)/(100)*(rBottom-rTop);ctx.strokeStyle=colors.grid;[30,50,70].forEach(v=>{ctx.globalAlpha=v===50?.35:.7;ctx.beginPath();ctx.moveTo(left,ry(v));ctx.lineTo(w-right,ry(v));ctx.stroke();ctx.fillStyle=colors.text;ctx.fillText(String(v),w-right+7,ry(v));});ctx.globalAlpha=1;ctx.strokeStyle=colors.blue;ctx.beginPath();let started=false;rv.slice(start).forEach((v,i)=>{if(v===null)return;const px=x(i),py=ry(v);if(!started){ctx.moveTo(px,py);started=true;}else ctx.lineTo(px,py);});if(started)ctx.stroke();ctx.fillStyle=colors.text;ctx.fillText('RSI 14',left,rTop+8);}
       ctx.fillStyle=colors.text;ctx.textBaseline='bottom';[0,Math.floor((candles.length-1)/2),candles.length-1].forEach((i,idx)=>{const dt=new Date(candles[i].time),label=state.interval==='60'?dt.toLocaleDateString(undefined,{month:'short',day:'numeric'}):dt.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});ctx.textAlign=idx===0?'left':idx===2?'right':'center';ctx.fillText(label,x(i),h-2);});
