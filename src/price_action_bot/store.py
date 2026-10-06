@@ -214,7 +214,7 @@ class Store:
 
     def recent_events(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self._execute(
-            "SELECT created_at_ms, symbol, event_type, payload FROM events ORDER BY id DESC LIMIT ?",
+            "SELECT id, created_at_ms, symbol, event_type, payload FROM events ORDER BY id DESC LIMIT ?",
             (limit,), fetch="all",
         )
         result = []
@@ -226,7 +226,7 @@ class Store:
 
     def events_since(self, since_ms: int, limit: int = 500) -> list[dict[str, Any]]:
         rows = self._execute(
-            "SELECT created_at_ms, symbol, event_type, payload FROM events "
+            "SELECT id, created_at_ms, symbol, event_type, payload FROM events "
             "WHERE created_at_ms >= ? ORDER BY id ASC LIMIT ?",
             (since_ms, limit), fetch="all",
         )
@@ -239,7 +239,7 @@ class Store:
 
     def recent_trades(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._execute(
-            """SELECT symbol, status, payload, opened_at_ms, updated_at_ms, closed_at_ms
+            """SELECT id, symbol, status, payload, opened_at_ms, updated_at_ms, closed_at_ms
                FROM trades ORDER BY id DESC LIMIT ?""",
             (limit,), fetch="all",
         )

@@ -1,0 +1,14 @@
+{
+  "builds": [
+    {
+      "src": "src/price_action_bot/web.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "src/price_action_bot/web.py"
+    }
+  ]
+}

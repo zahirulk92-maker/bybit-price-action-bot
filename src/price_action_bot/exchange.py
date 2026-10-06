@@ -16,6 +16,12 @@ class InstrumentRules:
     tick_size: float
 
 
+class BybitAPIError(RuntimeError):
+    def __init__(self, code: int, message: str) -> None:
+        self.code = code
+        super().__init__(f"Bybit error {code}: {message}")
+
+
 class BybitGateway:
     def __init__(self, api_key: str, api_secret: str, demo: bool = True) -> None:
         try:
@@ -32,7 +38,7 @@ class BybitGateway:
     @staticmethod
     def _check(response: dict[str, Any]) -> dict[str, Any]:
         if response.get("retCode") != 0:
-            raise RuntimeError(f"Bybit error {response.get('retCode')}: {response.get('retMsg')}")
+            raise BybitAPIError(int(response.get("retCode") or -1), str(response.get("retMsg") or ""))
         return response
 
     def server_time_ms(self) -> int:
@@ -95,11 +101,20 @@ class BybitGateway:
         return rules
 
     def equity_usdt(self) -> float:
+        return self.wallet_summary()["equity"]
+
+    def wallet_summary(self) -> dict[str, float]:
         response = self._check(self.session.get_wallet_balance(accountType="UNIFIED"))
         accounts = response["result"]["list"]
         if not accounts:
             raise RuntimeError("No unified account balance returned")
-        return float(accounts[0]["totalEquity"])
+        account = accounts[0]
+        return {
+            "equity": float(account.get("totalEquity") or 0),
+            "wallet_balance": float(account.get("totalWalletBalance") or 0),
+            "available_balance": float(account.get("totalAvailableBalance") or 0),
+            "unrealized_pnl": float(account.get("totalPerpUPL") or 0),
+        }
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
         try:
@@ -115,19 +130,73 @@ class BybitGateway:
             if "leverage not modified" not in str(exc).lower():
                 raise
 
-    def place_market_order(self, symbol: str, side: Side, qty: float, order_link_id: str) -> str:
-        response = self._check(
-            self.session.place_order(
-                category="linear",
-                symbol=symbol,
-                side=side,
-                orderType="Market",
-                qty=str(qty),
-                positionIdx=0,
-                orderLinkId=order_link_id[:36],
+    def order_by_link_id(self, symbol: str, order_link_id: str) -> dict[str, Any] | None:
+        """Find an accepted order before any retry can create a second submission."""
+        link_id = order_link_id[:36]
+        for method_name in ("get_open_orders", "get_order_history"):
+            method = getattr(self.session, method_name)
+            response = self._check(
+                method(category="linear", symbol=symbol, orderLinkId=link_id, limit=1)
             )
-        )
-        return str(response["result"]["orderId"])
+            rows = list(response.get("result", {}).get("list") or [])
+            if rows:
+                return rows[0]
+        return None
+
+    def place_market_order(
+        self,
+        symbol: str,
+        side: Side,
+        qty: float,
+        order_link_id: str,
+        attempts: int = 3,
+    ) -> str:
+        """Submit once logically, recovering ambiguous responses by ``orderLinkId``."""
+        link_id = order_link_id[:36]
+        attempts = max(1, min(attempts, 5))
+        retryable_codes = {10000, 10002, 10006, 10016}
+        last_error: Exception | None = None
+
+        for attempt in range(attempts):
+            try:
+                existing = self.order_by_link_id(symbol, link_id)
+            except Exception as exc:
+                last_error = exc
+                retryable = not isinstance(exc, BybitAPIError) or exc.code in retryable_codes
+                if not retryable or attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            if existing:
+                return str(existing.get("orderId") or "")
+            try:
+                response = self._check(
+                    self.session.place_order(
+                        category="linear",
+                        symbol=symbol,
+                        side=side,
+                        orderType="Market",
+                        qty=str(qty),
+                        positionIdx=0,
+                        orderLinkId=link_id,
+                    )
+                )
+                return str(response["result"]["orderId"])
+            except Exception as exc:
+                last_error = exc
+                # A timeout can happen after Bybit accepted the order. Reconcile first.
+                try:
+                    existing = self.order_by_link_id(symbol, link_id)
+                except Exception:
+                    existing = None
+                if existing:
+                    return str(existing.get("orderId") or "")
+                retryable = not isinstance(exc, BybitAPIError) or exc.code in retryable_codes
+                if not retryable or attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.4 * (attempt + 1))
+
+        raise RuntimeError("Order submission failed") from last_error
 
     def position(self, symbol: str) -> dict[str, Any] | None:
         response = self._check(self.session.get_positions(category="linear", symbol=symbol))
@@ -135,6 +204,52 @@ class BybitGateway:
             if float(position.get("size") or 0) > 0:
                 return position
         return None
+
+    def open_positions(self) -> list[dict[str, Any]]:
+        """Return every open USDT perpetual position from the exchange."""
+        positions: list[dict[str, Any]] = []
+        cursor = ""
+        while True:
+            params: dict[str, Any] = {
+                "category": "linear",
+                "settleCoin": "USDT",
+                "limit": 200,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            response = self._check(self.session.get_positions(**params))
+            result = response["result"]
+            positions.extend(
+                position
+                for position in result["list"]
+                if float(position.get("size") or 0) > 0
+            )
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor:
+                return positions
+
+    def closed_pnl(self, start_time_ms: int, limit: int = 100) -> list[dict[str, Any]]:
+        """Return Bybit's authoritative closed-PnL rows since ``start_time_ms``."""
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        remaining = max(1, limit)
+        while remaining > 0:
+            params: dict[str, Any] = {
+                "category": "linear",
+                "startTime": start_time_ms,
+                "limit": min(100, remaining),
+            }
+            if cursor:
+                params["cursor"] = cursor
+            response = self._check(self.session.get_closed_pnl(**params))
+            result = response["result"]
+            page = list(result.get("list") or [])
+            rows.extend(page)
+            remaining = limit - len(rows)
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor or not page:
+                break
+        return rows[:limit]
 
     def wait_for_position(self, symbol: str, attempts: int = 8) -> dict[str, Any]:
         for _ in range(attempts):

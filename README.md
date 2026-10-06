@@ -11,7 +11,7 @@ The repository also includes an authenticated web dashboard with real Bybit cand
 3. At a matching zone, inspect closed 5m candles for bullish/bearish pin bars, engulfing patterns, morning/evening stars, or tweezer bottoms/tops.
 4. Require confirmation-candle volume to be at least `1.2 ×` the previous 20 closed 5m candles' average.
 5. Arm the signal for the next three 5m candles. Enter only after the pattern high/low breaks and the next 1h target still offers at least `1.5R`.
-6. Risk `0.5%` of equity per trade. At `+1R`, close 50% and move the stop to entry plus an estimated fee buffer. After `+1.5R`, trail behind recent closed 5m candles.
+6. Risk `1%` of equity per trade. At `+1R`, close 50% and move the stop to entry plus an estimated fee buffer. After `+1.5R`, trail behind recent closed 5m candles.
 
 All thresholds are environment settings and should be changed only after reviewing demo results.
 
@@ -19,7 +19,7 @@ All thresholds are environment settings and should be changed only after reviewi
 
 Requires Python 3.10 or newer.
 
-For the safest first local test, double-click `start.bat`. It creates `.venv`, installs dependencies, opens the dashboard at `http://127.0.0.1:8000`, and runs the scanner in Bybit Demo signal-only mode. Press `Ctrl+C` in its terminal to stop it.
+Double-click `start.bat` to create `.venv`, install dependencies, open the dashboard at `http://127.0.0.1:8000`, and run the bot with Bybit Demo order placement enabled. It forces Demo mode and 5× leverage; it does not authorize live trading. Press `Ctrl+C` in its terminal to stop it.
 
 ```powershell
 python -m venv .venv
@@ -62,7 +62,44 @@ BYBIT_DEMO=true
 ENABLE_ORDER_PLACEMENT=true
 ```
 
-Then restart the bot. It sets 3× leverage before entry and places exchange-side stop-loss/take-profit protection immediately after confirming the fill. Configure the account/contract for isolated margin and one-way position mode in Bybit Demo Trading before enabling orders.
+Then restart the bot. It sets 5× leverage before entry, places the exchange-side stop-loss immediately after confirming the fill, and manages TP1/TP2/TP3 as staged exits. Configure the account/contract for isolated margin and one-way position mode in Bybit Demo Trading before enabling orders.
+
+The worker now reconciles local open trades against all Bybit USDT perpetual positions at startup, every minute, and immediately before every entry. Quantity and exchange stop changes are synchronized for tracked positions. An exchange position with no matching local trade, or a side mismatch, is never adopted automatically: that symbol is entry-blocked and a dashboard/Telegram warning is raised for manual review.
+
+The dashboard's **Real P&L · Bybit** section comes from Bybit's closed-PnL endpoint, not estimated candle prices or local event labels. It shows today's Asia/Dhaka net realized P&L, fees, wins/losses, win rate, and recent exchange-confirmed exits. Unrealized P&L remains separately visible in the wallet card.
+
+Open `/audit` from the dashboard's **Trade audit** button for a filterable 1/3/7-day record. The page deliberately labels Bybit closed-PnL rows as exchange truth and local strategy trades/events as local audit data. Telegram Alerts V3 also sends each newly observed Bybit closed-PnL row once, with actual net P&L and reported trading fees, while setup expiry, invalidation, risk blocks, and trailing-stop moves receive separate lifecycle alerts.
+
+The audit page can download **Daily CSV/PDF** and **Weekly CSV/PDF** reports. Daily reports begin at 00:00 Asia/Dhaka; weekly reports begin Monday at 00:00. CSV files are UTF-8 Excel-friendly flat exit records, while PDFs include the exchange-confirmed P&L summary, exit table, and reconciliation status.
+
+Entry orders use a deterministic Bybit `orderLinkId` and up to `ORDER_RETRY_ATTEMPTS=3` safe attempts. Before a submit or retry, the gateway checks Bybit open/recent orders and order history for that same ID. An ambiguous timeout is reconciled first, so the bot does not blindly send a duplicate market order.
+
+The enforced daily loss guard uses Bybit's exchange-confirmed `closedPnl` from 00:00 Asia/Dhaka. The day-start capital is estimated as current wallet balance minus today's realized P&L. At a net loss of `5%` of that capital, new entries are locked until the next Dhaka midnight; existing positions continue to receive stop, partial-profit, trailing-stop, and reversal management. If Bybit P&L or wallet data cannot be verified, order-mode entries fail closed. With three allowed positions at 1% each, maximum configured simultaneous open risk is 3%.
+
+Chart support and resistance are confirmed 1h swing levels, not moving averages, so they do not follow every price tick. They update after a new closed 1h swing is confirmed. If live price crosses one first, the chart marks it as a broken support/resistance flip-watch level instead of silently moving the line.
+
+## Risk-engine rollout plan (3 + 3 + 2)
+
+The eight planned controls will not be enabled together. They are operational safety controls, not additional entry-confirmation rules. Each phase should first run in `MONITOR_ONLY` mode on Demo so its warnings and effect on trade frequency can be reviewed before enforcement.
+
+### Phase 1 — essential protection (3)
+
+1. Daily loss limit: implemented at `5%` of estimated start-of-day capital, reset at midnight Asia/Dhaka. It locks only new entries and fails closed if exchange risk data is unavailable.
+2. Consecutive-loss cooldown: proposed starting point is three losses followed by a 60-minute entry pause.
+3. Stop-loss verification: confirm the protective stop exists at Bybit after every fill; emergency-close an unprotected position.
+
+### Phase 2 — exchange-quality guards (3)
+
+4. Exchange reconciliation: implemented for positions at startup, every minute, and before entry; unknown or side-mismatched positions block that symbol instead of being adopted automatically. Entry retries also reconcile the deterministic client order ID against recent orders and order history.
+5. Slippage/spread guard: proposed starting maximum slippage is `0.15%`; tune it from Demo execution data rather than treating it as a permanent value.
+6. Liquidation-distance guard: reject a setup only when the planned stop does not have a safe buffer from liquidation at the configured leverage.
+
+### Phase 3 — emergency controls (2)
+
+7. Maximum drawdown lock: proposed starting threshold `5%`, requiring manual review before resuming entries.
+8. Emergency kill switch: cancel pending signals and pause new entries, with a separate explicit action for closing Demo positions.
+
+Roll out one phase at a time and measure signal count, executed trades, blocked trades, win rate and drawdown. If a control blocks normal setups too often, adjust that control from Demo evidence instead of weakening the price-action strategy.
 
 ## Tests
 

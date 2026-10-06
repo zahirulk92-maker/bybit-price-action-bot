@@ -28,13 +28,15 @@ services:
       - key: RUN_ENGINE_IN_WEB
         value: "true"
       - key: LEVERAGE
-        value: "3"
+        value: "5"
       - key: RISK_PER_TRADE
-        value: "0.005"
+        value: "0.01"
       - key: MAX_OPEN_POSITIONS
         value: "3"
       - key: MAX_TOTAL_OPEN_RISK
-        value: "0.015"
+        value: "0.03"
+      - key: DAILY_MAX_NET_LOSS
+        value: "0.05"
       - key: MIN_REWARD_RISK
         value: "1.5"
       - key: VOLUME_MULTIPLIER
@@ -43,6 +45,8 @@ services:
         value: "10"
       - key: POLL_SECONDS
         value: "20"
+      - key: ORDER_RETRY_ATTEMPTS
+        value: "3"
       - key: LOG_LEVEL
         value: INFO
 
