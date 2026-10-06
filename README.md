@@ -11,7 +11,7 @@ The repository also includes an authenticated web dashboard with real Bybit cand
 3. At a matching zone, inspect closed 5m candles for bullish/bearish pin bars, engulfing patterns, morning/evening stars, or tweezer bottoms/tops.
 4. Require confirmation-candle volume to be at least `1.2 ×` the previous 20 closed 5m candles' average.
 5. Arm the signal for the next three 5m candles. Enter only after the pattern high/low breaks and the next 1h target still offers at least `1.5R`.
-6. Risk `0.5%` of equity per trade. At `+1R`, close 50% and move the stop to entry plus an estimated fee buffer. After `+1.5R`, trail behind recent closed 5m candles.
+6. Risk `1%` of equity per trade. At `+1R`, close 50% and move the stop to entry plus an estimated fee buffer. After `+1.5R`, trail behind recent closed 5m candles.
 
 All thresholds are environment settings and should be changed only after reviewing demo results.
 
@@ -74,6 +74,8 @@ The audit page can download **Daily CSV/PDF** and **Weekly CSV/PDF** reports. Da
 
 Entry orders use a deterministic Bybit `orderLinkId` and up to `ORDER_RETRY_ATTEMPTS=3` safe attempts. Before a submit or retry, the gateway checks Bybit open/recent orders and order history for that same ID. An ambiguous timeout is reconciled first, so the bot does not blindly send a duplicate market order.
 
+The enforced daily loss guard uses Bybit's exchange-confirmed `closedPnl` from 00:00 Asia/Dhaka. The day-start capital is estimated as current wallet balance minus today's realized P&L. At a net loss of `5%` of that capital, new entries are locked until the next Dhaka midnight; existing positions continue to receive stop, partial-profit, trailing-stop, and reversal management. If Bybit P&L or wallet data cannot be verified, order-mode entries fail closed. With three allowed positions at 1% each, maximum configured simultaneous open risk is 3%.
+
 Chart support and resistance are confirmed 1h swing levels, not moving averages, so they do not follow every price tick. They update after a new closed 1h swing is confirmed. If live price crosses one first, the chart marks it as a broken support/resistance flip-watch level instead of silently moving the line.
 
 ## Risk-engine rollout plan (3 + 3 + 2)
@@ -82,7 +84,7 @@ The eight planned controls will not be enabled together. They are operational sa
 
 ### Phase 1 — essential protection (3)
 
-1. Daily loss limit: proposed starting threshold `2%`, reset at midnight Asia/Dhaka.
+1. Daily loss limit: implemented at `5%` of estimated start-of-day capital, reset at midnight Asia/Dhaka. It locks only new entries and fails closed if exchange risk data is unavailable.
 2. Consecutive-loss cooldown: proposed starting point is three losses followed by a 60-minute entry pause.
 3. Stop-loss verification: confirm the protective stop exists at Bybit after every fill; emergency-close an unprotected position.
 

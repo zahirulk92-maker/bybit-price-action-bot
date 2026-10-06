@@ -511,6 +511,11 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
     now_ms = int(time.time() * 1000)
     heartbeat_age = now_ms - int(heartbeat.get("updated_at_ms", 0)) if heartbeat else None
     heartbeat_details = heartbeat.get("details", {}) if heartbeat else {}
+    daily_loss = heartbeat_details.get("daily_loss", {
+        "available": not settings.enable_order_placement,
+        "breached": False,
+        "limit_fraction": settings.daily_max_net_loss,
+    })
     last_scan_at_ms = int(heartbeat_details.get("last_scan_at_ms", 0) or 0)
     scanner_age = now_ms - last_scan_at_ms if last_scan_at_ms else None
     scanner_status = str(heartbeat_details.get("scanner_status", "starting"))
@@ -529,11 +534,16 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
     safety = {
         "environment": "DEMO LOCKED" if settings.demo else "LIVE ACKNOWLEDGED",
         "execution": "SIGNAL ONLY" if not settings.enable_order_placement else "ORDERS ENABLED",
-        "entries": "ENABLED" if store.trading_enabled() else "PAUSED",
+        "entries": (
+            "DAILY LOSS LOCK" if daily_loss.get("breached") else
+            "RISK DATA UNAVAILABLE" if settings.enable_order_placement and not daily_loss.get("available") else
+            "ENABLED" if store.trading_enabled() else "PAUSED"
+        ),
         "risk_guard": "ACTIVE",
         "live_lock": not settings.demo and settings.live_trading_ack == "I_UNDERSTAND_LIVE_RISK",
         "max_positions": settings.max_open_positions,
         "max_total_risk": settings.max_total_open_risk,
+        "daily_loss": daily_loss,
     }
     trades = store.recent_trades(100)
     return {
@@ -566,6 +576,7 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "strategy": {
             "leverage": settings.leverage,
             "risk_per_trade": settings.risk_per_trade,
+            "daily_max_net_loss": settings.daily_max_net_loss,
             "max_positions": settings.max_open_positions,
             "min_reward_risk": settings.min_reward_risk,
             "volume_multiplier": settings.volume_multiplier,

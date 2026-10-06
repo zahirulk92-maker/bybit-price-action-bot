@@ -30,11 +30,13 @@ services:
       - key: LEVERAGE
         value: "5"
       - key: RISK_PER_TRADE
-        value: "0.005"
+        value: "0.01"
       - key: MAX_OPEN_POSITIONS
         value: "3"
       - key: MAX_TOTAL_OPEN_RISK
-        value: "0.015"
+        value: "0.03"
+      - key: DAILY_MAX_NET_LOSS
+        value: "0.05"
       - key: MIN_REWARD_RISK
         value: "1.5"
       - key: VOLUME_MULTIPLIER

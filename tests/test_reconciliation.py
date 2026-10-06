@@ -94,6 +94,44 @@ class ReconciliationTests(unittest.TestCase):
         ]
         self.assertEqual(len(matching_events), 1)
 
+    def test_daily_loss_guard_locks_entries_at_five_percent(self):
+        self.gateway.closed_pnl.return_value = [
+            {"closedPnl": "-30"},
+            {"closedPnl": "-20"},
+        ]
+        self.gateway.wallet_summary.return_value = {"wallet_balance": 950.0}
+
+        result = self.engine._check_daily_loss_limit(force=True)
+
+        self.assertTrue(result["available"])
+        self.assertTrue(result["breached"])
+        self.assertEqual(result["starting_capital"], 1000.0)
+        self.assertEqual(result["max_loss_usdt"], 50.0)
+        self.assertEqual(result["remaining_usdt"], 0.0)
+        event_names = [call.args[0] for call in self.store.event.call_args_list]
+        self.assertIn("DAILY_LOSS_LIMIT_REACHED", event_names)
+        self.notifier.send.assert_called_once()
+
+    def test_daily_loss_guard_allows_entries_below_limit(self):
+        self.gateway.closed_pnl.return_value = [{"closedPnl": "-35"}]
+        self.gateway.wallet_summary.return_value = {"wallet_balance": 965.0}
+
+        result = self.engine._check_daily_loss_limit(force=True)
+
+        self.assertTrue(result["available"])
+        self.assertFalse(result["breached"])
+        self.assertEqual(result["starting_capital"], 1000.0)
+        self.assertEqual(result["remaining_usdt"], 15.0)
+        self.notifier.send.assert_not_called()
+
+    def test_daily_loss_guard_fails_closed_when_exchange_data_is_missing(self):
+        self.gateway.closed_pnl.side_effect = TimeoutError("Bybit unavailable")
+
+        result = self.engine._check_daily_loss_limit(force=True)
+
+        self.assertFalse(result["available"])
+        self.assertFalse(result["breached"])
+
 
 if __name__ == "__main__":
     unittest.main()

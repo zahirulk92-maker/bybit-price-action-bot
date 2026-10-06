@@ -76,6 +76,17 @@ class TradingEngine:
         self.last_daily_report_key = ""
         self.last_reconcile_ms = 0
         self.last_pnl_poll_ms = 0
+        self.last_daily_loss_check_ms = 0
+        self.daily_loss_alert_key = ""
+        self.daily_loss: dict[str, object] = {
+            "available": not settings.enable_order_placement,
+            "breached": False,
+            "limit_fraction": settings.daily_max_net_loss,
+            "realized_pnl": 0.0,
+            "starting_capital": 0.0,
+            "max_loss_usdt": 0.0,
+            "remaining_usdt": 0.0,
+        }
         self.notified_closed_pnl_ids: set[str] = set()
         self.blocked_symbols: set[str] = set()
         self.reconciliation: dict[str, object] = {
@@ -117,7 +128,8 @@ class TradingEngine:
         self._reconcile_exchange_positions()
         self._notify_new_closed_pnl()
         self._maybe_send_daily_report()
-        entries_enabled = self.store.trading_enabled()
+        daily_loss = self._check_daily_loss_limit()
+        entries_enabled = self.store.trading_enabled() and bool(daily_loss.get("available")) and not bool(daily_loss.get("breached"))
         for symbol in self.symbols:
             if symbol in self.trades or symbol in self.blocked_symbols:
                 continue
@@ -187,6 +199,72 @@ class TradingEngine:
         self.notifier.send(report)
         self.store.event("DAILY_REPORT_SENT", report_date=report_key, **counts)
         self.last_daily_report_key = report_key
+
+    def _check_daily_loss_limit(self, force: bool = False) -> dict[str, object]:
+        """Fail closed on new entries when today's Bybit net P&L reaches the cap."""
+        if not self.settings.enable_order_placement:
+            self.daily_loss.update(available=True, breached=False)
+            return self.daily_loss
+        now_ms = int(time.time() * 1000)
+        if not force and now_ms - self.last_daily_loss_check_ms < 15_000:
+            return self.daily_loss
+        dhaka = timezone(timedelta(hours=6))
+        local_now = datetime.now(dhaka)
+        start = datetime.combine(local_now.date(), datetime.min.time(), tzinfo=dhaka)
+        report_key = local_now.date().isoformat()
+        try:
+            rows = self.gateway.closed_pnl(int(start.timestamp() * 1000), limit=500)
+            realized = sum(float(row.get("closedPnl") or 0) for row in rows)
+            wallet = self.gateway.wallet_summary()
+            wallet_balance = float(wallet.get("wallet_balance") or 0)
+            starting_capital = max(0.0, wallet_balance - realized)
+            max_loss = starting_capital * self.settings.daily_max_net_loss
+            breached = starting_capital > 0 and realized <= -max_loss
+            self.daily_loss = {
+                "available": True,
+                "breached": breached,
+                "limit_fraction": self.settings.daily_max_net_loss,
+                "realized_pnl": realized,
+                "starting_capital": starting_capital,
+                "max_loss_usdt": max_loss,
+                "remaining_usdt": max(0.0, max_loss + realized),
+                "checked_at_ms": now_ms,
+                "reset_at": f"{(local_now + timedelta(days=1)).date().isoformat()} 00:00 Asia/Dhaka",
+            }
+            self.last_daily_loss_check_ms = now_ms
+            if breached and self.daily_loss_alert_key != report_key:
+                self.daily_loss_alert_key = report_key
+                self.armed.clear()
+                self.store.event(
+                    "DAILY_LOSS_LIMIT_REACHED",
+                    realized_pnl=realized,
+                    starting_capital=starting_capital,
+                    max_loss_usdt=max_loss,
+                    limit_fraction=self.settings.daily_max_net_loss,
+                )
+                self.notifier.send(format_alert(
+                    "🛑 DAILY LOSS LIMIT REACHED",
+                    status="NEW ENTRIES LOCKED",
+                    facts=[
+                        ("💵 Bybit net P&L", f"{realized:+.4f} USDT"),
+                        ("🏦 Start capital", f"{starting_capital:.4f} USDT"),
+                        ("⛔ Daily limit", f"{self.settings.daily_max_net_loss * 100:.2f}% · {max_loss:.4f} USDT"),
+                    ],
+                    action="Open positions remain protected; entry lock resets at 00:00 Asia/Dhaka",
+                ))
+            if not breached and self.daily_loss_alert_key != report_key:
+                self.daily_loss_alert_key = ""
+        except Exception as exc:
+            LOGGER.exception("Daily loss guard could not verify Bybit P&L")
+            self.daily_loss = {
+                "available": False,
+                "breached": False,
+                "limit_fraction": self.settings.daily_max_net_loss,
+                "error": str(exc),
+                "checked_at_ms": now_ms,
+            }
+            self.last_daily_loss_check_ms = now_ms
+        return self.daily_loss
 
     def _process_symbol(self, symbol: str, last_price: float, entries_enabled: bool = True) -> None:
         candles_5m = self.gateway.candles(symbol, "5", 120)
@@ -430,6 +508,14 @@ class TradingEngine:
 
     def _enter(self, symbol: str, armed: ArmedSignal, expected_entry: float) -> None:
         if self.settings.enable_order_placement:
+            daily_loss = self._check_daily_loss_limit(force=True)
+            if not daily_loss.get("available") or daily_loss.get("breached"):
+                self.store.event(
+                    "ENTRY_BLOCKED_DAILY_LOSS" if daily_loss.get("breached") else "ENTRY_BLOCKED_RISK_DATA",
+                    symbol,
+                    **daily_loss,
+                )
+                return
             # Re-check the exchange immediately before placing an order so a
             # manually opened position cannot be duplicated between scans.
             self._reconcile_exchange_positions(force=True)
@@ -955,6 +1041,7 @@ class TradingEngine:
             last_scan_at_ms=0,
             next_scan_at_ms=started_at_ms,
             reconciliation=self.reconciliation,
+            daily_loss=self.daily_loss,
         )
         while not self._stop_event.is_set():
             started = time.monotonic()
@@ -977,6 +1064,7 @@ class TradingEngine:
                     last_scan_duration_ms=elapsed_ms,
                     next_scan_at_ms=next_scan_at_ms,
                     reconciliation=self.reconciliation,
+                    daily_loss=self.daily_loss,
                 )
             except Exception:
                 LOGGER.exception("Engine cycle failed")
@@ -990,6 +1078,7 @@ class TradingEngine:
                     last_scan_at_ms=failed_at_ms,
                     next_scan_at_ms=failed_at_ms + self.settings.poll_seconds * 1000,
                     reconciliation=self.reconciliation,
+                    daily_loss=self.daily_loss,
                 )
             elapsed = time.monotonic() - started
             self._stop_event.wait(max(1.0, self.settings.poll_seconds - elapsed))

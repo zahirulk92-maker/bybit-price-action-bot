@@ -31,9 +31,10 @@ class Settings:
     enable_order_placement: bool = False
     live_trading_ack: str = ""
     leverage: int = 5
-    risk_per_trade: float = 0.005
+    risk_per_trade: float = 0.01
     max_open_positions: int = 3
-    max_total_open_risk: float = 0.015
+    max_total_open_risk: float = 0.03
+    daily_max_net_loss: float = 0.05
     min_reward_risk: float = 1.5
     volume_multiplier: float = 1.2
     universe_size: int = 10
@@ -61,9 +62,10 @@ class Settings:
             enable_order_placement=_bool("ENABLE_ORDER_PLACEMENT", False),
             live_trading_ack=os.getenv("LIVE_TRADING_ACK", ""),
             leverage=int(os.getenv("LEVERAGE", "5")),
-            risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.005")),
+            risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.01")),
             max_open_positions=int(os.getenv("MAX_OPEN_POSITIONS", "3")),
-            max_total_open_risk=float(os.getenv("MAX_TOTAL_OPEN_RISK", "0.015")),
+            max_total_open_risk=float(os.getenv("MAX_TOTAL_OPEN_RISK", "0.03")),
+            daily_max_net_loss=float(os.getenv("DAILY_MAX_NET_LOSS", "0.05")),
             min_reward_risk=float(os.getenv("MIN_REWARD_RISK", "1.5")),
             volume_multiplier=float(os.getenv("VOLUME_MULTIPLIER", "1.2")),
             universe_size=int(os.getenv("UNIVERSE_SIZE", "10")),
@@ -95,6 +97,8 @@ class Settings:
             raise ValueError("MAX_TOTAL_OPEN_RISK cannot be below RISK_PER_TRADE")
         if self.max_total_open_risk > 0.05:
             raise ValueError("MAX_TOTAL_OPEN_RISK cannot exceed 0.05")
+        if not 0 < self.daily_max_net_loss <= 0.10:
+            raise ValueError("DAILY_MAX_NET_LOSS must be > 0 and <= 0.10")
         if self.universe_size < 2 or self.universe_size > 25:
             raise ValueError("UNIVERSE_SIZE must be between 2 and 25")
         if self.order_retry_attempts < 1 or self.order_retry_attempts > 5:
