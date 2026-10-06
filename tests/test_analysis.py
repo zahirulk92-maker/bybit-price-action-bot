@@ -1,6 +1,6 @@
 import unittest
 
-from price_action_bot.analysis import detect_pattern, reward_risk
+from price_action_bot.analysis import detect_pattern, reward_risk, setup_checklist
 from price_action_bot.models import Candle, MarketContext, Zone
 
 
@@ -37,6 +37,23 @@ class PatternTests(unittest.TestCase):
             candle(22, 100.2, 101.0, 98.0, 100.8, 110),
         ]
         self.assertIsNone(detect_pattern(candles, self.context, 1.2))
+        decision = setup_checklist(candles, self.context, 1.2, 1.5)
+        checks = {item["key"]: item for item in decision["checks"]}
+        self.assertEqual(checks["zone"]["status"], "pass")
+        self.assertEqual(checks["pattern"]["status"], "pass")
+        self.assertEqual(checks["volume"]["status"], "wait")
+        self.assertIn("volume", decision["summary"].lower())
+
+    def test_checklist_explains_when_price_is_outside_zone(self):
+        candles = self.history + [
+            candle(20, 105, 106, 104, 105.5),
+            candle(21, 105.5, 106, 104.5, 105),
+            candle(22, 105, 106, 104, 105.5),
+        ]
+        decision = setup_checklist(candles, self.context, 1.2, 1.5)
+        checks = {item["key"]: item for item in decision["checks"]}
+        self.assertEqual(checks["zone"]["status"], "wait")
+        self.assertIn("target zone", decision["summary"].lower())
 
     def test_reward_risk(self):
         self.assertEqual(reward_risk(100, 98, 104, "Buy"), 2.0)
@@ -45,4 +62,3 @@ class PatternTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

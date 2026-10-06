@@ -124,6 +124,7 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "heartbeat": heartbeat,
         "trading_enabled": store.trading_enabled(),
         "markets": store.market_snapshots(),
+        "decisions": store.decision_snapshots(),
         "open_trades": store.recent_trades(100),
         "events": store.recent_events(40),
         "strategy": {

@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from .analysis import detect_pattern, market_context, reward_risk
+from .analysis import detect_pattern, market_context, reward_risk, setup_checklist
 from .config import Settings
 from .exchange import BybitGateway
 from .models import ArmedSignal, SignalState, Trade
@@ -19,6 +19,16 @@ from .universe import select_symbols
 LOGGER = logging.getLogger(__name__)
 FIVE_MINUTES_MS = 5 * 60 * 1000
 UNIVERSE_REFRESH_MS = 24 * 60 * 60 * 1000
+
+
+def _set_check(
+    decision: dict[str, object], key: str, status: str, detail: str
+) -> None:
+    for check in decision.get("checks", []):
+        if isinstance(check, dict) and check.get("key") == key:
+            check["status"] = status
+            check["detail"] = detail
+            return
 
 
 class TradingEngine:
@@ -98,19 +108,61 @@ class TradingEngine:
         )
         support = context.support.center if context.support else None
         resistance = context.resistance.center if context.resistance else None
+
+        def save_market(state: str) -> None:
+            self.store.market_snapshot(
+                symbol, last_price or latest.close, context.bias, support, resistance, state
+            )
+
         visible_state = "PAUSED" if not entries_enabled else "ARMED" if symbol in self.armed else "SCAN"
-        self.store.market_snapshot(
-            symbol, last_price or latest.close, context.bias, support, resistance, visible_state
+        save_market(visible_state)
+        decision = setup_checklist(
+            candles_5m,
+            context,
+            self.settings.volume_multiplier,
+            self.settings.min_reward_risk,
         )
         if not entries_enabled:
             self.armed.pop(symbol, None)
+            decision["summary"] = "Entries are paused — analysis continues without arming setups"
+            _set_check(decision, "trigger", "wait", "Resume entries to allow a setup to arm")
+            self.store.decision_snapshot(symbol, decision)
             return
 
         armed = self.armed.get(symbol)
         if armed:
+            _set_check(
+                decision,
+                "pattern",
+                "pass",
+                armed.pattern.name.replace("_", " ").title(),
+            )
+            _set_check(
+                decision,
+                "volume",
+                "pass",
+                f"{armed.pattern.volume_ratio:.2f}× passed the volume gate",
+            )
+            armed_rr = reward_risk(
+                armed.pattern.trigger, armed.pattern.stop, armed.target, armed.pattern.side
+            )
+            _set_check(
+                decision,
+                "rr",
+                "pass",
+                f"1:{armed_rr:.2f} passed the minimum",
+            )
+            decision["direction"] = armed.pattern.side
+            decision["pattern"] = armed.pattern.name
+            decision["volume_ratio"] = armed.pattern.volume_ratio
+            decision["reward_risk"] = armed_rr
             if latest.timestamp_ms > armed.expires_at_ms:
                 self.store.event("SIGNAL_EXPIRED", symbol, pattern=armed.pattern.name)
+                decision["summary"] = "Armed setup expired before the trigger break"
+                _set_check(decision, "trigger", "fail", "Trigger did not break within four 5m candles")
+                self.store.decision_snapshot(symbol, decision)
                 self.armed.pop(symbol, None)
+                save_market("SCAN")
                 return
             invalid = (
                 armed.pattern.side == "Buy" and latest.close <= armed.pattern.stop
@@ -119,7 +171,11 @@ class TradingEngine:
             )
             if invalid:
                 self.store.event("SIGNAL_INVALIDATED", symbol, pattern=armed.pattern.name)
+                decision["summary"] = "Armed setup was invalidated by price"
+                _set_check(decision, "trigger", "fail", "Price closed beyond the pattern stop")
+                self.store.decision_snapshot(symbol, decision)
                 self.armed.pop(symbol, None)
+                save_market("SCAN")
                 return
             is_later_candle = latest.timestamp_ms > armed.pattern.timestamp_ms
             triggered = (
@@ -129,15 +185,40 @@ class TradingEngine:
             )
             if is_later_candle and triggered:
                 entry = last_price or latest.close
-                if reward_risk(entry, armed.pattern.stop, armed.target, armed.pattern.side) < self.settings.min_reward_risk:
+                live_rr = reward_risk(entry, armed.pattern.stop, armed.target, armed.pattern.side)
+                _set_check(decision, "trigger", "pass", f"Price broke {armed.pattern.trigger:.8g}")
+                if live_rr < self.settings.min_reward_risk:
                     self.store.event("SIGNAL_SKIPPED_RR", symbol, entry=entry, target=armed.target)
+                    decision["summary"] = "Trigger broke, but live reward-to-risk became too small"
+                    _set_check(
+                        decision,
+                        "rr",
+                        "fail",
+                        f"Live 1:{live_rr:.2f} is below 1:{self.settings.min_reward_risk:.2f}",
+                    )
                 else:
+                    decision["summary"] = (
+                        "Entry signal confirmed" if not self.settings.enable_order_placement
+                        else "Entry confirmed — order execution requested"
+                    )
                     self._enter(symbol, armed, entry)
+                self.store.decision_snapshot(symbol, decision)
                 self.armed.pop(symbol, None)
+                save_market("SCAN")
+                return
+            decision["summary"] = f"Setup armed — waiting for {armed.pattern.side.lower()} trigger break"
+            _set_check(
+                decision,
+                "trigger",
+                "wait",
+                f"Waiting for price to break {armed.pattern.trigger:.8g}",
+            )
+            self.store.decision_snapshot(symbol, decision)
             return
 
         pattern = detect_pattern(candles_5m, context, self.settings.volume_multiplier)
         if pattern is None:
+            self.store.decision_snapshot(symbol, decision)
             return
         target = (
             context.resistance.center
@@ -155,6 +236,8 @@ class TradingEngine:
                 stop=pattern.stop,
                 target=target,
             )
+            decision["summary"] = "Pattern rejected because reward-to-risk is below the minimum"
+            self.store.decision_snapshot(symbol, decision)
             return
         armed = ArmedSignal(
             pattern=pattern,
@@ -163,6 +246,15 @@ class TradingEngine:
             target=target,
         )
         self.armed[symbol] = armed
+        save_market("ARMED")
+        decision["summary"] = f"Setup armed — waiting for {pattern.side.lower()} trigger break"
+        _set_check(
+            decision,
+            "trigger",
+            "wait",
+            f"Waiting for price to break {pattern.trigger:.8g}",
+        )
+        self.store.decision_snapshot(symbol, decision)
         self.store.event(
             "SIGNAL_ARMED",
             symbol,

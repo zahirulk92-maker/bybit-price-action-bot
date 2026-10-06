@@ -33,6 +33,19 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(history), 2)
         self.assertEqual(sum(row["status"] == "open" for row in history), 1)
 
+    def test_decision_checklist_round_trip(self):
+        decision = {
+            "summary": "Waiting for volume",
+            "checks": [
+                {"key": "volume", "label": "Volume", "status": "wait", "detail": "0.9x"}
+            ],
+        }
+        self.store.decision_snapshot("BTCUSDT", decision)
+        saved = self.store.decision_snapshots()[0]
+        self.assertEqual(saved["symbol"], "BTCUSDT")
+        self.assertEqual(saved["checks"][0]["status"], "wait")
+        self.assertGreater(saved["updated_at_ms"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

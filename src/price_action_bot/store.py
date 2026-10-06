@@ -78,6 +78,11 @@ class Store:
                 signal_state TEXT NOT NULL, updated_at_ms BIGINT NOT NULL
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS decision_snapshots (
+                symbol TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at_ms BIGINT NOT NULL
+            )
+            """,
         ]
         for statement in statements:
             self._execute(statement)
@@ -235,3 +240,34 @@ class Store:
     def market_snapshots(self) -> list[dict[str, Any]]:
         rows = self._execute("SELECT * FROM market_snapshots ORDER BY symbol", fetch="all")
         return [self._dict(row) for row in rows]
+
+    def decision_snapshot(self, symbol: str, decision: dict[str, object]) -> None:
+        now = int(time.time() * 1000)
+        encoded = json.dumps(decision, sort_keys=True)
+        exists = self._execute(
+            "SELECT symbol FROM decision_snapshots WHERE symbol=?", (symbol,), fetch="one"
+        )
+        if exists:
+            self._execute(
+                "UPDATE decision_snapshots SET payload=?, updated_at_ms=? WHERE symbol=?",
+                (encoded, now, symbol),
+            )
+        else:
+            self._execute(
+                "INSERT INTO decision_snapshots(symbol, payload, updated_at_ms) VALUES (?, ?, ?)",
+                (symbol, encoded, now),
+            )
+
+    def decision_snapshots(self) -> list[dict[str, Any]]:
+        rows = self._execute(
+            "SELECT symbol, payload, updated_at_ms FROM decision_snapshots ORDER BY symbol",
+            fetch="all",
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._dict(row)
+            decision = json.loads(item["payload"])
+            decision["symbol"] = item["symbol"]
+            decision["updated_at_ms"] = item["updated_at_ms"]
+            result.append(decision)
+        return result

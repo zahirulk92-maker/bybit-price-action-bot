@@ -50,9 +50,31 @@
     .tf.active { background:#17384a; color:var(--text); }
     .chart-area { position:relative; min-height:440px; padding:10px 12px 8px; }
     .chart-meta { min-height:22px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:.69rem; font-variant-numeric:tabular-nums; padding:0 4px; }
-    #chartCanvas { display:block; width:100%; height:390px; }
+    #chartCanvas { display:block; width:100%; height:420px; cursor:crosshair; }
     .chart-loading { position:absolute; inset:45px 12px 8px; display:grid; place-items:center; color:var(--muted); background:rgba(6,19,28,.6); backdrop-filter:blur(2px); font-size:.82rem; }
     .chart-loading[hidden] { display:none; }
+    .chart-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 12px; border-top:1px solid var(--line); background:rgba(6,19,28,.32); }
+    .tool-group { display:flex; align-items:center; gap:5px; flex-wrap:wrap; padding-right:8px; margin-right:2px; border-right:1px solid var(--line); }
+    .tool-group:last-child { border-right:0; }
+    .tool-group-label { color:var(--muted); font-size:.62rem; text-transform:uppercase; letter-spacing:.07em; margin-right:2px; }
+    .tool-check { display:inline-flex; align-items:center; gap:4px; color:#bed0da; font-size:.66rem; cursor:pointer; white-space:nowrap; }
+    .tool-check input { accent-color:var(--mint); width:13px; height:13px; margin:0; }
+    .draw-btn { border:1px solid var(--line); border-radius:6px; padding:4px 7px; color:var(--muted); background:transparent; font-size:.65rem; cursor:pointer; }
+    .draw-btn.active,.draw-btn:hover { color:var(--text); background:#17384a; border-color:#2b596d; }
+    .decision-summary { padding:12px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; background:rgba(104,183,255,.05); border-bottom:1px solid var(--line); }
+    .decision-summary strong { font-size:.8rem; }
+    .decision-summary span { color:var(--muted); font-size:.69rem; white-space:nowrap; }
+    .decision-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .decision-grid > .empty { grid-column:1/-1; }
+    .decision-item { min-height:84px; padding:12px; display:grid; grid-template-columns:22px 1fr; align-content:start; gap:2px 8px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .decision-item:nth-child(3n) { border-right:0; }
+    .decision-item:nth-last-child(-n+3) { border-bottom:0; }
+    .decision-icon { grid-row:1/3; width:20px; height:20px; display:grid; place-items:center; border-radius:50%; font-size:.68rem; font-weight:900; background:#183442; color:var(--muted); }
+    .decision-icon.pass { color:var(--mint); background:rgba(61,227,194,.12); }
+    .decision-icon.wait { color:var(--amber); background:rgba(255,200,90,.12); }
+    .decision-icon.fail { color:var(--red); background:rgba(255,100,118,.12); }
+    .decision-label { font-size:.73rem; font-weight:750; }
+    .decision-detail { color:var(--muted); font-size:.67rem; line-height:1.35; overflow-wrap:anywhere; }
     .watch-panel { min-height:544px; }
     .watch-list { padding:4px 0; }
     .watch-row { width:100%; border:0; border-left:3px solid transparent; background:transparent; color:inherit; display:grid; grid-template-columns:1fr auto; gap:3px 10px; padding:10px 12px; text-align:left; cursor:pointer; }
@@ -88,7 +110,7 @@
     .setting strong { display:block; margin-top:4px; font-size:.85rem; }
     footer { color:#58788a; font-size:.7rem; margin:16px 2px 0; }
     @media(max-width:1000px){ .workspace{grid-template-columns:1fr}.watch-panel{min-height:0}.watch-list{display:grid;grid-template-columns:repeat(2,1fr)}.watch-row:nth-child(odd){border-right:1px solid var(--line)} }
-    @media(max-width:720px){ .shell{padding:14px}.stats{grid-template-columns:repeat(2,1fr)}.lower-grid{grid-template-columns:1fr}.settings{grid-template-columns:repeat(2,1fr)}.chart-area{min-height:360px}#chartCanvas{height:310px} }
+    @media(max-width:720px){ .shell{padding:14px}.stats{grid-template-columns:repeat(2,1fr)}.lower-grid{grid-template-columns:1fr}.settings,.decision-grid{grid-template-columns:repeat(2,1fr)}.decision-item:nth-child(3n){border-right:1px solid var(--line)}.decision-item:nth-child(2n){border-right:0}.decision-item:nth-last-child(-n+3){border-bottom:1px solid var(--line)}.decision-item:nth-last-child(-n+2){border-bottom:0}.chart-area{min-height:360px}#chartCanvas{height:350px}.tool-group{border-right:0;padding-right:0} }
     @media(max-width:520px){ header{align-items:flex-start}.eyebrow{display:none}.header-actions{flex-direction:column-reverse;align-items:stretch}.badge{justify-content:center}.watch-list{grid-template-columns:1fr}.watch-row:nth-child(odd){border-right:0}.chart-area{padding-inline:6px}.panel-head{align-items:flex-start}.timeframes{margin-left:auto} }
   </style>
 </head>
@@ -115,6 +137,36 @@
             <div class="timeframes" aria-label="Chart timeframe"><button class="tf active" type="button" data-interval="5">5m</button><button class="tf" type="button" data-interval="15">15m</button><button class="tf" type="button" data-interval="60">1h</button></div>
           </div>
           <div class="chart-area"><div id="chartMeta" class="chart-meta">Waiting for candle data…</div><canvas id="chartCanvas" aria-label="Candlestick price chart"></canvas><div id="chartLoading" class="chart-loading">Loading chart…</div></div>
+          <div class="chart-tools" aria-label="Chart layers and drawing tools">
+            <div class="tool-group"><span class="tool-group-label">Layers</span>
+              <label class="tool-check"><input id="layerLevels" type="checkbox" checked> S/R</label>
+              <label class="tool-check"><input id="layerVolume" type="checkbox" checked> Volume</label>
+              <label class="tool-check"><input id="layerRsi" type="checkbox"> RSI</label>
+              <label class="tool-check"><input id="layerSingle" type="checkbox" checked> Single candle</label>
+              <label class="tool-check"><input id="layerDouble" type="checkbox" checked> Double candle</label>
+            </div>
+            <div class="tool-group"><span class="tool-group-label">MA</span>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ma" data-period="9" type="checkbox"> 9</label>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ma" data-period="21" type="checkbox"> 21</label>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ma" data-period="50" type="checkbox"> 50</label>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ma" data-period="200" type="checkbox"> 200</label>
+            </div>
+            <div class="tool-group"><span class="tool-group-label">EMA</span>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ema" data-period="9" type="checkbox"> 9</label>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ema" data-period="21" type="checkbox"> 21</label>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ema" data-period="50" type="checkbox"> 50</label>
+              <label class="tool-check"><input class="indicator-toggle" data-kind="ema" data-period="200" type="checkbox"> 200</label>
+            </div>
+            <div class="tool-group"><span class="tool-group-label">Draw</span>
+              <button class="draw-btn active" type="button" data-draw="cursor">Cursor</button><button class="draw-btn" type="button" data-draw="horizontal">水平</button><button class="draw-btn" type="button" data-draw="trend">Trend</button><button class="draw-btn" type="button" data-draw="rectangle">Box</button><button id="clearDrawings" class="draw-btn" type="button">Clear</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Decision checklist</h2><span id="decisionSymbol" class="panel-note">Waiting for scan</span></div>
+          <div class="decision-summary"><strong id="decisionSummary">Waiting for the first closed 5m evaluation…</strong><span id="decisionUpdated">—</span></div>
+          <div id="decisionList" class="decision-grid"><div class="empty">Checklist will appear after the next scan.</div></div>
         </section>
 
         <section class="panel">
@@ -138,7 +190,7 @@
 
   <script>
     const $ = id => document.getElementById(id);
-    const state = { enabled:false, markets:[], selected:"", interval:"5", chart:null, request:0 };
+    const state = { enabled:false, markets:[], decisions:[], selected:"", interval:"5", chart:null, request:0, layers:{levels:true,volume:true,rsi:false,single:true,double:true,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
     const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff" };
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
@@ -146,7 +198,7 @@
     const tone = bias => ["bullish","bearish"].includes(String(bias).toLowerCase())?String(bias).toLowerCase():"range";
 
     function renderStatus(data){
-      state.enabled=data.trading_enabled; state.markets=data.markets;
+      state.enabled=data.trading_enabled; state.markets=data.markets; state.decisions=data.decisions||[];
       const open=data.open_trades.filter(row=>row.status==="open"), armed=data.markets.filter(m=>m.signal_state==="ARMED");
       $('environment').textContent=data.environment.toUpperCase(); $('execution').textContent=data.execution==="orders"?"demo order execution":"signal-only mode";
       $('universeCount').textContent=data.markets.length; $('positionCount').textContent=open.length; $('positionMeta').textContent=`maximum ${data.strategy.max_positions}`;
@@ -161,13 +213,21 @@
       }).join(""):'<div class="empty">Waiting for first market scan…</div>';
       document.querySelectorAll('.watch-row').forEach(row=>row.addEventListener('click',()=>selectSymbol(row.dataset.symbol)));
       const market=data.markets.find(m=>m.symbol===state.selected); if(market) updateChartHeading(market);
+      renderDecision();
       $('tradeRows').innerHTML=data.open_trades.length?data.open_trades.map(row=>{const t=row.trade;return `<tr><td class="symbol">${esc(row.symbol)}</td><td class="${t.side==='Buy'?'bullish':'bearish'}">${esc(t.side)}</td><td>${fmt(t.entry)}</td><td>${fmt(t.stop)}</td><td>${fmt(t.target)}</td><td>${fmt(t.qty)}</td><td><span class="signal">${esc(row.status)}</span></td></tr>`;}).join(""):'<tr><td colspan="7" class="empty">No positions — waiting for a confirmed 5m trigger.</td></tr>';
       const s=data.strategy; $('settings').innerHTML=[["Leverage",`${s.leverage}×`],["Risk / trade",`${(s.risk_per_trade*100).toFixed(2)}%`],["Minimum R:R",`1:${s.min_reward_risk}`],["Volume gate",`${s.volume_multiplier}×`],["Max positions",s.max_positions],["Universe",s.universe_size]].map(([l,v])=>`<div class="setting"><span>${l}</span><strong>${v}</strong></div>`).join("");
       $('events').innerHTML=data.events.length?data.events.map(e=>{const d=Object.entries(e.payload).slice(0,3).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join(', '):v}`).join(' · ');return `<li class="event"><strong>${esc(e.event_type.replaceAll('_',' '))}${e.symbol?` · ${esc(e.symbol)}`:''}</strong><p>${esc(d||'No additional details')} · ${ago(e.created_at_ms)}</p></li>`;}).join(""):'<li class="empty">No events yet.</li>';
     }
 
     function updateChartHeading(m){ $('chartSymbol').textContent=m.symbol; $('chartPrice').textContent=fmt(m.price); $('chartBias').textContent=`${m.bias} 1H`; $('chartBias').className=`bias ${tone(m.bias)}`; }
-    function selectSymbol(symbol){ if(symbol===state.selected)return; state.selected=symbol; document.querySelectorAll('.watch-row').forEach(r=>r.classList.toggle('active',r.dataset.symbol===symbol)); const m=state.markets.find(x=>x.symbol===symbol); if(m)updateChartHeading(m); loadChart(); }
+    function renderDecision(){
+      const decision=state.decisions.find(item=>item.symbol===state.selected); $('decisionSymbol').textContent=state.selected||'Waiting for scan';
+      if(!decision){ $('decisionSummary').textContent='Waiting for this symbol’s next closed 5m evaluation…'; $('decisionUpdated').textContent='—'; $('decisionList').innerHTML='<div class="empty">Checklist will appear after the next scan.</div>'; return; }
+      $('decisionSummary').textContent=decision.summary; $('decisionUpdated').textContent=`updated ${ago(decision.updated_at_ms)}`;
+      const icons={pass:'✓',wait:'…',fail:'×'};
+      $('decisionList').innerHTML=(decision.checks||[]).map(check=>`<div class="decision-item"><span class="decision-icon ${esc(check.status)}">${icons[check.status]||'·'}</span><span class="decision-label">${esc(check.label)}</span><span class="decision-detail">${esc(check.detail)}</span></div>`).join('')||'<div class="empty">No checklist data yet.</div>';
+    }
+    function selectSymbol(symbol){ if(symbol===state.selected)return; state.selected=symbol; document.querySelectorAll('.watch-row').forEach(r=>r.classList.toggle('active',r.dataset.symbol===symbol)); const m=state.markets.find(x=>x.symbol===symbol); if(m)updateChartHeading(m); renderDecision(); loadChart(); }
 
     async function loadChart(){
       if(!state.selected)return; const request=++state.request; $('chartLoading').hidden=false; $('chartLoading').textContent='Loading chart…';
@@ -176,23 +236,39 @@
     }
 
     function candleMeta(c){ if(!c){$('chartMeta').textContent='No candle data';return;} $('chartMeta').innerHTML=`<span>O ${fmt(c.open)}</span><span>H ${fmt(c.high)}</span><span>L ${fmt(c.low)}</span><span>C ${fmt(c.close)}</span><span class="${c.close>=c.open?'bullish':'bearish'}">VOL ${fmt(c.volume,5)}</span>`; }
+    const sma=(values,p)=>values.map((_,i)=>i+1<p?null:values.slice(i-p+1,i+1).reduce((a,b)=>a+b,0)/p);
+    function ema(values,p){const out=[];let prev=null,k=2/(p+1);values.forEach((v,i)=>{prev=prev===null?v:v*k+prev*(1-k);out.push(i+1<p?null:prev);});return out;}
+    function rsi(values,p=14){const out=values.map(()=>null);let gain=0,loss=0;for(let i=1;i<values.length;i++){const d=values[i]-values[i-1];if(i<=p){gain+=Math.max(d,0);loss+=Math.max(-d,0);if(i===p)out[i]=loss?100-(100/(1+gain/loss)):100;}else{gain=(gain*(p-1)+Math.max(d,0))/p;loss=(loss*(p-1)+Math.max(-d,0))/p;out[i]=loss?100-(100/(1+gain/loss)):100;}}return out;}
+    function pattern(candles,i){const c=candles[i],range=Math.max(c.high-c.low,1e-9),body=Math.abs(c.close-c.open),upper=c.high-Math.max(c.open,c.close),lower=Math.min(c.open,c.close)-c.low;let single=null,double=null;if(body/range<.12)single='Doji';else if(lower>body*2&&upper<body)single='Hammer';else if(upper>body*2&&lower<body)single='Shooting Star';if(i>0){const p=candles[i-1];if(c.close>c.open&&p.close<p.open&&c.open<=p.close&&c.close>=p.open)double='Bullish Engulfing';else if(c.close<c.open&&p.close>p.open&&c.open>=p.close&&c.close<=p.open)double='Bearish Engulfing';}return {single,double};}
     function drawChart(){
       const data=state.chart,canvas=$('chartCanvas'),rect=canvas.getBoundingClientRect(),dpr=Math.min(window.devicePixelRatio||1,2),w=Math.max(300,rect.width),h=Math.max(260,rect.height);
       canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
       if(!data?.candles?.length){$('chartLoading').hidden=false;$('chartLoading').textContent='No closed candles available';return;}
-      const left=10,right=66,top=14,volumeH=62,bottom=20,priceBottom=h-volumeH-bottom,gap=6,plotW=w-left-right;
-      const maxVisible=Math.max(35,Math.floor(plotW/7));const candles=data.candles.slice(-maxVisible);const levels=[Number(data.support),Number(data.resistance)].filter(Number.isFinite);
+      const all=data.candles, left=10,right=66,top=14,bottom=22,rsiH=state.layers.rsi?78:0,volumeH=state.layers.volume?62:0,priceBottom=h-rsiH-volumeH-bottom,gap=6,plotW=w-left-right;
+      const maxVisible=Math.max(35,Math.floor(plotW/7)),start=Math.max(0,all.length-maxVisible),candles=all.slice(start),values=all.map(c=>Number(c.close)),levels=state.layers.levels?[Number(data.support),Number(data.resistance)].filter(Number.isFinite):[];
       let lo=Math.min(...candles.map(c=>c.low),...levels),hi=Math.max(...candles.map(c=>c.high),...levels);const pad=Math.max((hi-lo)*.07,hi*.0004);lo-=pad;hi+=pad;
       const y=p=>top+(hi-p)/(hi-lo)*(priceBottom-top),x=i=>left+(i+.5)*plotW/candles.length,step=plotW/candles.length,body=Math.max(2,Math.min(9,step*.62));
       ctx.font='10px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';for(let i=0;i<5;i++){const yy=top+(priceBottom-top)*i/4,p=hi-(hi-lo)*i/4;ctx.strokeStyle=colors.grid;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.fillStyle=colors.text;ctx.fillText(fmt(p,6),w-right+7,yy);}
-      [[Number(data.resistance),colors.red,'R'],[Number(data.support),colors.mint,'S']].forEach(([level,color,label])=>{if(!Number.isFinite(level))return;const yy=y(level);ctx.fillStyle=color+'20';ctx.fillRect(left,yy-6,plotW,12);ctx.strokeStyle=color;ctx.globalAlpha=.65;ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.globalAlpha=1;ctx.fillStyle=color;ctx.fillText(`${label} ${fmt(level)}`,left+5,yy-11);});
-      const maxVol=Math.max(...candles.map(c=>c.volume),1);candles.forEach((c,i)=>{const xx=x(i),up=c.close>=c.open,color=up?colors.mint:colors.red;ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xx,y(c.high));ctx.lineTo(xx,y(c.low));ctx.stroke();const y1=y(Math.max(c.open,c.close)),y2=y(Math.min(c.open,c.close));ctx.fillStyle=color;ctx.fillRect(xx-body/2,y1,body,Math.max(1,y2-y1));const vh=c.volume/maxVol*(volumeH-10);ctx.globalAlpha=.32;ctx.fillRect(xx-body/2,h-bottom-vh,body,vh);ctx.globalAlpha=1;});
-      ctx.strokeStyle=colors.grid;ctx.beginPath();ctx.moveTo(left,priceBottom+gap);ctx.lineTo(w-right,priceBottom+gap);ctx.stroke();ctx.fillStyle=colors.text;ctx.textBaseline='bottom';[0,Math.floor((candles.length-1)/2),candles.length-1].forEach((i,idx)=>{const dt=new Date(candles[i].time),label=state.interval==='60'?dt.toLocaleDateString(undefined,{month:'short',day:'numeric'}):dt.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});ctx.textAlign=idx===0?'left':idx===2?'right':'center';ctx.fillText(label,x(i),h-2);});
-      state.chartView={candles,left,plotW,step};candleMeta(candles[candles.length-1]);$('chartLoading').hidden=true;
+      if(state.layers.levels)[[Number(data.resistance),colors.red,'R'],[Number(data.support),colors.mint,'S']].forEach(([level,color,label])=>{if(!Number.isFinite(level))return;const yy=y(level);ctx.fillStyle=color+'20';ctx.fillRect(left,yy-6,plotW,12);ctx.strokeStyle=color;ctx.globalAlpha=.65;ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.globalAlpha=1;ctx.fillStyle=color;ctx.fillText(`${label} ${fmt(level)}`,left+5,yy-11);});
+      const series=(kind,p)=>kind==='ema'?ema(values,p):sma(values,p),lineColors={9:'#68b7ff',21:'#ffc85a',50:'#c48cff',200:'#ff8f70'};
+      [['ma',state.layers.ma],['ema',state.layers.ema]].forEach(([kind,periods])=>periods.forEach(p=>{const vals=series(kind,p);ctx.strokeStyle=lineColors[p];ctx.lineWidth=1.5;ctx.globalAlpha=.9;ctx.beginPath();let started=false;vals.slice(start).forEach((v,i)=>{if(v===null)return;const px=x(i),py=y(v);if(!started){ctx.moveTo(px,py);started=true;}else ctx.lineTo(px,py);});if(started)ctx.stroke();ctx.globalAlpha=1;}));
+      const maxVol=Math.max(...candles.map(c=>c.volume),1);candles.forEach((c,i)=>{const xx=x(i),up=c.close>=c.open,color=up?colors.mint:colors.red;ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xx,y(c.high));ctx.lineTo(xx,y(c.low));ctx.stroke();const y1=y(Math.max(c.open,c.close)),y2=y(Math.min(c.open,c.close));ctx.fillStyle=color;ctx.fillRect(xx-body/2,y1,body,Math.max(1,y2-y1));if(state.layers.volume){const vh=c.volume/maxVol*(volumeH-10);ctx.globalAlpha=.32;ctx.fillRect(xx-body/2,priceBottom+gap+volumeH-vh,body,vh);ctx.globalAlpha=1;}const p=pattern(candles,i);if((state.layers.single&&p.single)||(state.layers.double&&p.double)){ctx.fillStyle=p.double?.includes('Bearish')||p.single==='Shooting Star'?colors.red:colors.mint;ctx.beginPath();ctx.arc(xx,y(c.high)+ (p.single==='Hammer'?8:-8),3,0,Math.PI*2);ctx.fill();}});
+      if(state.layers.volume){ctx.strokeStyle=colors.grid;ctx.beginPath();ctx.moveTo(left,priceBottom+gap);ctx.lineTo(w-right,priceBottom+gap);ctx.stroke();ctx.fillStyle=colors.text;ctx.fillText('Volume',left,priceBottom+14);}
+      if(state.layers.rsi){const rv=rsi(values),rTop=priceBottom+volumeH+8,rBottom=h-bottom-3,ry=v=>rTop+(100-v)/(100)*(rBottom-rTop);ctx.strokeStyle=colors.grid;[30,50,70].forEach(v=>{ctx.globalAlpha=v===50?.35:.7;ctx.beginPath();ctx.moveTo(left,ry(v));ctx.lineTo(w-right,ry(v));ctx.stroke();ctx.fillStyle=colors.text;ctx.fillText(String(v),w-right+7,ry(v));});ctx.globalAlpha=1;ctx.strokeStyle=colors.blue;ctx.beginPath();let started=false;rv.slice(start).forEach((v,i)=>{if(v===null)return;const px=x(i),py=ry(v);if(!started){ctx.moveTo(px,py);started=true;}else ctx.lineTo(px,py);});if(started)ctx.stroke();ctx.fillStyle=colors.text;ctx.fillText('RSI 14',left,rTop+8);}
+      ctx.fillStyle=colors.text;ctx.textBaseline='bottom';[0,Math.floor((candles.length-1)/2),candles.length-1].forEach((i,idx)=>{const dt=new Date(candles[i].time),label=state.interval==='60'?dt.toLocaleDateString(undefined,{month:'short',day:'numeric'}):dt.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});ctx.textAlign=idx===0?'left':idx===2?'right':'center';ctx.fillText(label,x(i),h-2);});
+      const drawLine=(a,b,color)=>{ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.setLineDash([6,4]);ctx.beginPath();ctx.moveTo(left+a.x*plotW,top+a.y*(priceBottom-top));ctx.lineTo(left+b.x*plotW,top+b.y*(priceBottom-top));ctx.stroke();ctx.setLineDash([]);};state.drawings.forEach(d=>{if(d.kind==='horizontal')drawLine(d.a,{x:1,y:d.a.y},colors.amber);else if(d.kind==='trend')drawLine(d.a,d.b,colors.blue);else {ctx.strokeStyle=colors.amber;ctx.globalAlpha=.7;ctx.strokeRect(left+d.a.x*plotW,top+d.a.y*(priceBottom-top),(d.b.x-d.a.x)*plotW,(d.b.y-d.a.y)*(priceBottom-top));ctx.globalAlpha=1;}});if(state.draft){if(state.draft.kind==='horizontal')drawLine(state.draft.a,{x:1,y:state.draft.a.y},colors.amber);else if(state.draft.b)drawLine(state.draft.a,state.draft.b,colors.blue);}
+      state.chartView={candles,left,plotW,step,top,priceBottom};candleMeta(candles[candles.length-1]);$('chartLoading').hidden=true;
     }
 
     $('chartCanvas').addEventListener('mousemove',event=>{const v=state.chartView;if(!v)return;const rect=event.currentTarget.getBoundingClientRect(),px=event.clientX-rect.left,i=Math.max(0,Math.min(v.candles.length-1,Math.floor((px-v.left)/v.step)));candleMeta(v.candles[i]);});
     $('chartCanvas').addEventListener('mouseleave',()=>{const c=state.chartView?.candles;candleMeta(c?.[c.length-1]);});
+    function chartPoint(event){const v=state.chartView,rect=$('chartCanvas').getBoundingClientRect();if(!v)return null;return {x:Math.max(0,Math.min(1,(event.clientX-rect.left-v.left)/v.plotW)),y:Math.max(0,Math.min(1,(event.clientY-rect.top-v.top)/(v.priceBottom-v.top)))};}
+    $('chartCanvas').addEventListener('pointerdown',event=>{if(state.drawMode==='cursor')return;const point=chartPoint(event);if(!point)return;event.currentTarget.setPointerCapture(event.pointerId);state.draft={kind:state.drawMode,a:point};drawChart();});
+    $('chartCanvas').addEventListener('pointermove',event=>{if(!state.draft)return;state.draft.b=chartPoint(event);drawChart();});
+    $('chartCanvas').addEventListener('pointerup',event=>{if(!state.draft)return;const d=state.draft;d.b=d.b||d.a;if(d.kind==='horizontal'||Math.abs(d.b.x-d.a.x)+Math.abs(d.b.y-d.a.y)>.02)state.drawings.push(d);state.draft=null;drawChart();});
+    document.querySelectorAll('[id^="layer"], .indicator-toggle').forEach(input=>input.addEventListener('change',()=>{if(input.classList.contains('indicator-toggle')){const kind=input.dataset.kind,period=Number(input.dataset.period);state.layers[kind]=input.checked?[...new Set([...state.layers[kind],period])]:state.layers[kind].filter(v=>v!==period);}else{const key=input.id.replace('layer','').toLowerCase();state.layers[key]=input.checked;}drawChart();}));
+    document.querySelectorAll('[data-draw]').forEach(button=>button.addEventListener('click',()=>{state.drawMode=button.dataset.draw;document.querySelectorAll('[data-draw]').forEach(b=>b.classList.toggle('active',b===button));$('chartCanvas').style.cursor=state.drawMode==='cursor'?'crosshair':'cell';}));
+    $('clearDrawings').addEventListener('click',()=>{state.drawings=[];state.draft=null;drawChart();});
     document.querySelectorAll('.tf').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tf').forEach(b=>b.classList.remove('active'));button.classList.add('active');state.interval=button.dataset.interval;$('chartSubtitle').textContent=`${button.textContent} chart · 1h support/resistance`;loadChart();}));
     $('controlButton').addEventListener('click',async()=>{const button=$('controlButton');button.disabled=true;try{const response=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!state.enabled})});if(!response.ok)throw new Error(`Control update failed (${response.status})`);await refresh();}catch(error){showError(error.message);button.disabled=false;}});
     function showError(message){$('notice').textContent=message;$('notice').style.display='block';}

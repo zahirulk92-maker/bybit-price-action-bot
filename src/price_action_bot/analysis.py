@@ -118,12 +118,10 @@ def _tweezer(previous: Candle, current: Candle, side: Side, tolerance: float) ->
     return previous.bullish and current.bearish and abs(previous.high - current.high) <= tolerance
 
 
-def detect_pattern(
-    candles_5m: list[Candle],
-    context: MarketContext,
-    volume_multiplier: float = 1.2,
+def _pattern_candidate(
+    candles_5m: list[Candle], context: MarketContext
 ) -> PatternSignal | None:
-    """Return a closed-candle pattern only when it forms inside the relevant 1h zone."""
+    """Return the price-action candidate before applying the volume gate."""
     if len(candles_5m) < 23:
         return None
     current = candles_5m[-1]
@@ -131,8 +129,6 @@ def detect_pattern(
     first = candles_5m[-3]
     index = len(candles_5m) - 1
     ratio = _volume_ratio(candles_5m, index)
-    if ratio < volume_multiplier:
-        return None
 
     candidates: list[tuple[Side, Zone | None]] = []
     if context.bias in {"bullish", "range"}:
@@ -179,6 +175,120 @@ def detect_pattern(
             volume_ratio=ratio,
         )
     return None
+
+
+def detect_pattern(
+    candles_5m: list[Candle],
+    context: MarketContext,
+    volume_multiplier: float = 1.2,
+) -> PatternSignal | None:
+    """Return a closed-candle pattern only when zone, shape and volume all confirm."""
+    candidate = _pattern_candidate(candles_5m, context)
+    if candidate is None or candidate.volume_ratio < volume_multiplier:
+        return None
+    return candidate
+
+
+def setup_checklist(
+    candles_5m: list[Candle],
+    context: MarketContext,
+    volume_multiplier: float = 1.2,
+    min_reward_risk: float = 1.5,
+) -> dict[str, object]:
+    """Explain the current setup decision without changing strategy behavior."""
+    if len(candles_5m) < 23:
+        return {
+            "summary": "Waiting for enough closed 5m candles",
+            "candle_time_ms": 0,
+            "checks": [],
+        }
+
+    current = candles_5m[-1]
+    window = candles_5m[-3:]
+    window_low = min(candle.low for candle in window)
+    window_high = max(candle.high for candle in window)
+    candidate_zones: list[tuple[Side, Zone | None]] = []
+    if context.bias in {"bullish", "range"}:
+        candidate_zones.append(("Buy", context.support))
+    if context.bias in {"bearish", "range"}:
+        candidate_zones.append(("Sell", context.resistance))
+    touched = [
+        (side, zone)
+        for side, zone in candidate_zones
+        if zone is not None and window_low <= zone.upper and window_high >= zone.lower
+    ]
+    candidate = _pattern_candidate(candles_5m, context)
+    ratio = _volume_ratio(candles_5m, len(candles_5m) - 1)
+
+    if context.bias == "bullish":
+        structure_detail = "Bullish — looking for long setups near support"
+    elif context.bias == "bearish":
+        structure_detail = "Bearish — looking for short setups near resistance"
+    else:
+        structure_detail = "Range — either edge can produce a setup"
+
+    if touched:
+        side, zone = touched[0]
+        zone_detail = f"{zone.kind.title()} touched — {side} setup is eligible"
+        zone_status = "pass"
+    else:
+        zone_names = " / ".join(
+            f"{zone.kind} {zone.center:.8g}" for _, zone in candidate_zones if zone is not None
+        )
+        zone_detail = f"Price is outside the relevant zone ({zone_names or 'not available'})"
+        zone_status = "wait"
+
+    pattern_status = "pass" if candidate else "wait"
+    pattern_detail = (
+        candidate.name.replace("_", " ").title()
+        if candidate
+        else "No approved reversal candle in the active zone"
+    )
+    volume_status = "pass" if ratio >= volume_multiplier else "wait"
+    volume_detail = f"{ratio:.2f}× vs required {volume_multiplier:.2f}×"
+
+    rr_value = 0.0
+    rr_status = "wait"
+    rr_detail = "Calculated after a valid pattern defines entry and stop"
+    if candidate:
+        target = (
+            context.resistance.center
+            if candidate.side == "Buy" and context.resistance
+            else context.support.center
+            if candidate.side == "Sell" and context.support
+            else 0.0
+        )
+        rr_value = reward_risk(candidate.trigger, candidate.stop, target, candidate.side)
+        rr_status = "pass" if target > 0 and rr_value >= min_reward_risk else "fail"
+        rr_detail = f"1:{rr_value:.2f} vs required 1:{min_reward_risk:.2f}"
+
+    if not touched:
+        summary = "Waiting for price to reach the 1h target zone"
+    elif not candidate:
+        summary = "Zone reached — waiting for an approved 5m reversal candle"
+    elif ratio < volume_multiplier:
+        summary = "Pattern found — volume confirmation is too weak"
+    elif rr_status == "fail":
+        summary = "Pattern confirmed — reward-to-risk is below the minimum"
+    else:
+        summary = "Setup qualifies — waiting for the trigger break"
+
+    return {
+        "summary": summary,
+        "candle_time_ms": current.timestamp_ms,
+        "direction": candidate.side if candidate else touched[0][0] if touched else "",
+        "pattern": candidate.name if candidate else "",
+        "volume_ratio": ratio,
+        "reward_risk": rr_value,
+        "checks": [
+            {"key": "structure", "label": "1H structure", "status": "pass", "detail": structure_detail},
+            {"key": "zone", "label": "Target zone", "status": zone_status, "detail": zone_detail},
+            {"key": "pattern", "label": "5m reversal candle", "status": pattern_status, "detail": pattern_detail},
+            {"key": "volume", "label": "Volume confirmation", "status": volume_status, "detail": volume_detail},
+            {"key": "rr", "label": "Reward to risk", "status": rr_status, "detail": rr_detail},
+            {"key": "trigger", "label": "Entry trigger", "status": "wait", "detail": "Available after the setup is armed"},
+        ],
+    }
 
 
 def reward_risk(entry: float, stop: float, target: float, side: Side) -> float:
