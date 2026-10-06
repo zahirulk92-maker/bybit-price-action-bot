@@ -1,6 +1,6 @@
 import unittest
 
-from price_action_bot.analysis import detect_pattern, reward_risk, setup_checklist
+from price_action_bot.analysis import detect_pattern, detect_trade_reversal, reward_risk, setup_checklist
 from price_action_bot.models import Candle, MarketContext, Zone
 
 
@@ -57,6 +57,25 @@ class PatternTests(unittest.TestCase):
 
     def test_reward_risk(self):
         self.assertEqual(reward_risk(100, 98, 104, "Buy"), 2.0)
+
+    def test_trade_reversal_is_symmetric_for_both_sides(self):
+        candles = self.history + [
+            candle(20, 100, 101, 98.5, 99, 100),
+            candle(21, 99, 99.5, 97.5, 98, 100),
+            candle(22, 97.8, 101.2, 97.5, 100.8, 240),
+        ]
+        short_exit = detect_trade_reversal(candles, "Sell", 1.2)
+        self.assertIsNotNone(short_exit)
+        self.assertEqual(short_exit["pattern"], "bullish_engulfing")
+
+        long_candles = self.history + [
+            candle(20, 98, 101, 97.5, 100, 100),
+            candle(21, 100, 101.5, 99.5, 101, 100),
+            candle(22, 101.2, 101.5, 97, 97.4, 240),
+        ]
+        long_exit = detect_trade_reversal(long_candles, "Buy", 1.2)
+        self.assertIsNotNone(long_exit)
+        self.assertEqual(long_exit["pattern"], "bearish_engulfing")
         self.assertEqual(reward_risk(100, 102, 96, "Sell"), 2.0)
 
 

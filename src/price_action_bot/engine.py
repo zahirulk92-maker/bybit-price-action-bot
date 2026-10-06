@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from .analysis import detect_pattern, market_context, reward_risk, setup_checklist
+from .analysis import detect_pattern, detect_trade_reversal, market_context, reward_risk, setup_checklist
 from .config import Settings
 from .exchange import BybitGateway
 from .models import ArmedSignal, SignalState, Trade
@@ -400,6 +400,28 @@ class TradingEngine:
                     self.notifier.send(f"CLOSED {symbol}")
                     continue
                 price = prices.get(symbol) or float(position["markPrice"])
+                management_candles = self.gateway.candles(symbol, "5", 40)
+                reversal = detect_trade_reversal(
+                    management_candles, trade.side, self.settings.volume_multiplier
+                )
+                if reversal:
+                    close_qty = float(position.get("size") or trade.qty)
+                    self.gateway.close_partial(symbol, trade.side, close_qty)
+                    self.store.event(
+                        "EARLY_EXIT_REVERSAL",
+                        symbol,
+                        side=trade.side,
+                        pattern=reversal["pattern"],
+                        volume_ratio=reversal["volume_ratio"],
+                        reason=reversal["reason"],
+                    )
+                    self.store.close_trade(symbol)
+                    self.trades.pop(symbol, None)
+                    self.notifier.send(
+                        f"EARLY EXIT {symbol} {trade.side}\n"
+                        f"reason={reversal['reason']} volume={float(reversal['volume_ratio']):.2f}x"
+                    )
+                    continue
                 reached_one_r = (
                     trade.side == "Buy" and price >= trade.one_r_target
                 ) or (

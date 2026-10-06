@@ -189,6 +189,46 @@ def detect_pattern(
     return candidate
 
 
+def detect_trade_reversal(
+    candles_5m: list[Candle], side: Side, volume_multiplier: float = 1.2
+) -> dict[str, object] | None:
+    """Return a closed-candle reversal that invalidates an open trade direction."""
+    if len(candles_5m) < 23:
+        return None
+    previous, current = candles_5m[-2], candles_5m[-1]
+    bullish_engulfing = (
+        current.bullish
+        and previous.bearish
+        and current.open <= previous.close
+        and current.close >= previous.open
+    )
+    bearish_engulfing = (
+        current.bearish
+        and previous.bullish
+        and current.open >= previous.close
+        and current.close <= previous.open
+    )
+    opposite_pattern = bullish_engulfing if side == "Sell" else bearish_engulfing
+    ratio = _volume_ratio(candles_5m, len(candles_5m) - 1)
+    structure_break = (
+        side == "Sell"
+        and current.close > max(candle.high for candle in candles_5m[-4:-1])
+    ) or (
+        side == "Buy"
+        and current.close < min(candle.low for candle in candles_5m[-4:-1])
+    )
+    if (opposite_pattern or structure_break) and ratio >= volume_multiplier:
+        return {
+            "pattern": "bullish_engulfing" if side == "Sell" and opposite_pattern else
+            "bearish_engulfing" if side == "Buy" and opposite_pattern else "structure_break",
+            "volume_ratio": ratio,
+            "candle_time_ms": current.timestamp_ms,
+            "reason": "Opposite engulfing candle with volume" if opposite_pattern else
+            "Opposite 5m structure break with volume",
+        }
+    return None
+
+
 def setup_checklist(
     candles_5m: list[Candle],
     context: MarketContext,
