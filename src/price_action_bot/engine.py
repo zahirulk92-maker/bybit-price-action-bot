@@ -5,6 +5,7 @@ import signal
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from .analysis import detect_pattern, detect_trade_reversal, market_context, reward_risk, setup_checklist
 from .config import Settings
@@ -72,6 +73,7 @@ class TradingEngine:
         self.trades = store.load_open_trades()
         self.notifier = notifier or TelegramNotifier()
         self._stop_event = threading.Event()
+        self.last_daily_report_key = ""
 
     def refresh_universe(self, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
@@ -100,6 +102,7 @@ class TradingEngine:
             if item.get("lastPrice")
         }
         self._manage_open_trades(prices)
+        self._maybe_send_daily_report()
         entries_enabled = self.store.trading_enabled()
         for symbol in self.symbols:
             if symbol in self.trades:
@@ -110,6 +113,40 @@ class TradingEngine:
                 LOGGER.exception("Failed while processing %s", symbol)
                 self.store.event("SYMBOL_ERROR", symbol)
             time.sleep(0.05)
+
+    def _maybe_send_daily_report(self) -> None:
+        """Send one compact daily operational report at the configured Dhaka time."""
+        dhaka = timezone(timedelta(hours=6))
+        now = datetime.now(dhaka)
+        if (now.hour, now.minute) < (self.settings.daily_report_hour, self.settings.daily_report_minute):
+            return
+        report_key = now.date().isoformat()
+        if report_key == self.last_daily_report_key:
+            return
+        start = datetime.combine(now.date(), datetime.min.time(), tzinfo=dhaka)
+        events = self.store.events_since(int(start.timestamp() * 1000), limit=1000)
+        counts: dict[str, int] = {}
+        for event in events:
+            counts[event["event_type"]] = counts.get(event["event_type"], 0) + 1
+        opened = counts.get("POSITION_OPENED", 0)
+        closed = counts.get("POSITION_CLOSED", 0) + counts.get("TP3_CLOSED", 0)
+        report = (
+            "📊 DAILY TRADING REPORT\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"📅 Date: {now.strftime('%d %b %Y')} · Asia/Dhaka\n"
+            f"🔎 Signals armed: {counts.get('SIGNAL_ARMED', 0)}\n"
+            f"✅ Positions opened: {opened}\n"
+            f"🏁 Positions closed: {closed}\n"
+            f"💰 TP1 / TP2 / TP3: {counts.get('PARTIAL_TP', 0)} / "
+            f"{counts.get('PARTIAL_TP2', 0)} / {counts.get('TP3_CLOSED', 0)}\n"
+            f"⚠️ Reversal exits: {counts.get('EARLY_EXIT_REVERSAL', 0)}\n"
+            f"🛑 Risk/emergency events: {counts.get('EMERGENCY_CLOSE_UNPROTECTED', 0) + counts.get('TRADE_MANAGEMENT_ERROR', 0)}\n"
+            f"📌 Open now: {len(self.trades)}\n"
+            f"🟢 Bot: {'ACTIVE' if self.settings.enable_order_placement else 'SIGNAL ONLY / DEMO'}"
+        )
+        self.notifier.send(report)
+        self.store.event("DAILY_REPORT_SENT", report_date=report_key, **counts)
+        self.last_daily_report_key = report_key
 
     def _process_symbol(self, symbol: str, last_price: float, entries_enabled: bool = True) -> None:
         candles_5m = self.gateway.candles(symbol, "5", 120)

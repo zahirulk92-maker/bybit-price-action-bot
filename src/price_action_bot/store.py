@@ -224,6 +224,19 @@ class Store:
             result.append(item)
         return result
 
+    def events_since(self, since_ms: int, limit: int = 500) -> list[dict[str, Any]]:
+        rows = self._execute(
+            "SELECT created_at_ms, symbol, event_type, payload FROM events "
+            "WHERE created_at_ms >= ? ORDER BY id ASC LIMIT ?",
+            (since_ms, limit), fetch="all",
+        )
+        result = []
+        for row in rows:
+            item = self._dict(row)
+            item["payload"] = json.loads(item["payload"])
+            result.append(item)
+        return result
+
     def recent_trades(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._execute(
             """SELECT symbol, status, payload, opened_at_ms, updated_at_ms, closed_at_ms

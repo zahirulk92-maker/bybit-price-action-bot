@@ -47,6 +47,8 @@ class Settings:
     run_engine_in_web: bool = False
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    daily_report_hour: int = 23
+    daily_report_minute: int = 55
 
     @classmethod
     def from_env(cls, env_path: str = ".env") -> "Settings":
@@ -74,6 +76,8 @@ class Settings:
             run_engine_in_web=_bool("RUN_ENGINE_IN_WEB", False),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+            daily_report_hour=int(os.getenv("DAILY_REPORT_HOUR", "23")),
+            daily_report_minute=int(os.getenv("DAILY_REPORT_MINUTE", "55")),
         )
         settings.validate()
         return settings
@@ -99,3 +103,7 @@ class Settings:
             )
         if bool(self.telegram_bot_token) != bool(self.telegram_chat_id):
             raise ValueError("Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or leave both blank")
+        if not 0 <= self.daily_report_hour <= 23:
+            raise ValueError("DAILY_REPORT_HOUR must be between 0 and 23")
+        if not 0 <= self.daily_report_minute <= 59:
+            raise ValueError("DAILY_REPORT_MINUTE must be between 0 and 59")
