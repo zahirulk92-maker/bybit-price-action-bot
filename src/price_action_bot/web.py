@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import secrets
+import csv
+import io
 import logging
+import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -9,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
@@ -36,6 +38,7 @@ pnl_cache_lock = threading.Lock()
 pnl_cache: tuple[float, dict[str, object]] | None = None
 audit_cache_lock = threading.Lock()
 audit_pnl_cache: dict[int, tuple[float, dict[str, object]]] = {}
+DHAKA = timezone(timedelta(hours=6))
 
 
 def _wallet_status() -> dict[str, object]:
@@ -123,9 +126,8 @@ def _real_pnl_status() -> dict[str, object]:
 
 
 def _today_summary(open_trades: list[dict[str, object]]) -> dict[str, int]:
-    dhaka = timezone(timedelta(hours=6))
-    now = datetime.now(dhaka)
-    start = datetime.combine(now.date(), datetime.min.time(), tzinfo=dhaka)
+    now = datetime.now(DHAKA)
+    start = datetime.combine(now.date(), datetime.min.time(), tzinfo=DHAKA)
     events = store.events_since(int(start.timestamp() * 1000), limit=2000)
     counts: dict[str, int] = {}
     for event in events:
@@ -240,25 +242,15 @@ def audit_dashboard(_: str = Depends(require_auth)) -> FileResponse:
     return FileResponse(static_dir / "audit.html")
 
 
-@app.get("/api/audit")
-def api_audit(
-    days: int = Query(7, ge=1, le=7),
-    symbol: str = Query("", max_length=30),
-    _: str = Depends(require_auth),
+def _audit_payload(
+    since_ms: int,
+    wanted: str,
+    pnl: dict[str, object],
+    *,
+    generated_at_ms: int | None = None,
+    period: str = "custom",
 ) -> dict[str, object]:
-    now_ms = int(time.time() * 1000)
-    since_ms = now_ms - days * 24 * 60 * 60 * 1000
-    wanted = symbol.strip().upper()
-    now = time.monotonic()
-    with audit_cache_lock:
-        cached = audit_pnl_cache.get(days)
-        if cached and cached[0] > now:
-            pnl = cached[1]
-        elif not settings.api_key or not settings.api_secret:
-            pnl = {"available": False, "error": "Demo API credentials are not configured", "rows": []}
-        else:
-            pnl = _pnl_status_since(since_ms)
-            audit_pnl_cache[days] = (now + 30, pnl)
+    now_ms = generated_at_ms or int(time.time() * 1000)
     events = store.events_since(since_ms, limit=2000)
     signals = [
         row for row in store.recent_signal_journal(1000)
@@ -283,7 +275,7 @@ def api_audit(
     return {
         "generated_at_ms": now_ms,
         "since_ms": since_ms,
-        "days": days,
+        "period": period,
         "symbol": wanted,
         "summary": {
             "realized_pnl": realized,
@@ -304,6 +296,213 @@ def api_audit(
         "events": list(reversed(events)),
         "signals": signals,
     }
+
+
+def _report_window(period: str, now: datetime | None = None) -> tuple[datetime, datetime]:
+    local_now = now or datetime.now(DHAKA)
+    if period == "daily":
+        start = datetime.combine(local_now.date(), datetime.min.time(), tzinfo=DHAKA)
+    elif period == "weekly":
+        week_start = local_now.date() - timedelta(days=local_now.weekday())
+        start = datetime.combine(week_start, datetime.min.time(), tzinfo=DHAKA)
+    else:
+        raise HTTPException(status_code=404, detail="Report period must be daily or weekly")
+    return start, local_now
+
+
+def _report_payload(period: str) -> tuple[dict[str, object], datetime, datetime]:
+    start, end = _report_window(period)
+    since_ms = int(start.timestamp() * 1000)
+    if not settings.api_key or not settings.api_secret:
+        pnl = {"available": False, "error": "Demo API credentials are not configured", "rows": []}
+    else:
+        pnl = _pnl_status_since(since_ms)
+    return _audit_payload(
+        since_ms,
+        "",
+        pnl,
+        generated_at_ms=int(end.timestamp() * 1000),
+        period=period,
+    ), start, end
+
+
+def _report_csv(payload: dict[str, object], start: datetime, end: datetime) -> bytes:
+    output = io.StringIO(newline="")
+    fields = [
+        "record_type", "report_period", "period_start", "period_end", "closed_at", "symbol",
+        "side", "quantity", "avg_entry", "avg_exit", "trading_fees", "net_realized_pnl",
+        "wins", "losses", "win_rate_percent", "exchange_exits", "local_events", "order_id",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    summary = payload.get("summary", {})
+    writer.writerow({
+        "record_type": "SUMMARY",
+        "report_period": payload["period"],
+        "period_start": start.isoformat(timespec="seconds"),
+        "period_end": end.isoformat(timespec="seconds"),
+        "trading_fees": summary.get("fees", 0),
+        "net_realized_pnl": summary.get("realized_pnl", 0),
+        "wins": summary.get("wins", 0),
+        "losses": summary.get("losses", 0),
+        "win_rate_percent": summary.get("win_rate", 0),
+        "exchange_exits": summary.get("exchange_exits", 0),
+        "local_events": summary.get("events", 0),
+    })
+    for row in payload.get("exchange_exits", []):
+        closed_at = datetime.fromtimestamp(
+            int(row.get("updated_at_ms") or 0) / 1000, DHAKA
+        ).isoformat(timespec="seconds") if row.get("updated_at_ms") else ""
+        writer.writerow({
+            "record_type": "EXIT",
+            "report_period": payload["period"],
+            "period_start": start.isoformat(timespec="seconds"),
+            "period_end": end.isoformat(timespec="seconds"),
+            "closed_at": closed_at,
+            "symbol": row.get("symbol", ""),
+            "side": row.get("side", ""),
+            "quantity": row.get("qty", 0),
+            "avg_entry": row.get("entry", 0),
+            "avg_exit": row.get("exit", 0),
+            "trading_fees": row.get("fees", 0),
+            "net_realized_pnl": row.get("closed_pnl", 0),
+            "order_id": row.get("order_id", ""),
+        })
+    return output.getvalue().encode("utf-8-sig")
+
+
+def _report_pdf(payload: dict[str, object], start: datetime, end: datetime) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_RIGHT
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle, Paragraph
+
+    output = io.BytesIO()
+    document = SimpleDocTemplate(
+        output,
+        pagesize=landscape(A4),
+        leftMargin=14 * mm,
+        rightMargin=14 * mm,
+        topMargin=13 * mm,
+        bottomMargin=13 * mm,
+        title=f"{str(payload['period']).title()} Trading Report",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="MetaRight", parent=styles["Normal"], alignment=TA_RIGHT, textColor=colors.HexColor("#527083"), fontSize=8))
+    styles["Title"].textColor = colors.HexColor("#092535")
+    styles["Title"].fontSize = 19
+    story = [
+        Table([[Paragraph("Price Action Trading Report", styles["Title"]), Paragraph(f"{str(payload['period']).upper()}<br/>{start:%d %b %Y %H:%M} - {end:%d %b %Y %H:%M} (Asia/Dhaka)", styles["MetaRight"])]], colWidths=[160 * mm, 95 * mm]),
+        Spacer(1, 6 * mm),
+    ]
+    summary = payload.get("summary", {})
+    cards = [
+        ["Net realized P&L", "Trading fees", "Exchange exits", "Win rate", "Local audit events"],
+        [
+            f"{_number(summary.get('realized_pnl')):+.4f} USDT",
+            f"{_number(summary.get('fees')):.4f} USDT",
+            str(summary.get("exchange_exits", 0)),
+            f"{_number(summary.get('win_rate')):.1f}%",
+            str(summary.get("events", 0)),
+        ],
+    ]
+    summary_table = Table(cards, colWidths=[51 * mm] * 5, rowHeights=[8 * mm, 11 * mm])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0c2f40")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#8fded0")),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#edf7f7")),
+        ("TEXTCOLOR", (0, 1), (-1, 1), colors.HexColor("#092535")),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#b9d4da")),
+    ]))
+    story.extend([summary_table, Spacer(1, 7 * mm), Paragraph("Bybit-confirmed exits", styles["Heading2"]), Spacer(1, 2 * mm)])
+    rows = [["Closed", "Symbol", "Side", "Qty", "Avg entry", "Avg exit", "Fees", "Net P&L", "Order ID"]]
+    for row in payload.get("exchange_exits", []):
+        closed = datetime.fromtimestamp(int(row.get("updated_at_ms") or 0) / 1000, DHAKA).strftime("%d %b %H:%M") if row.get("updated_at_ms") else "-"
+        rows.append([
+            closed, str(row.get("symbol") or "-"), str(row.get("side") or "-"),
+            f"{_number(row.get('qty')):.8g}", f"{_number(row.get('entry')):.8g}",
+            f"{_number(row.get('exit')):.8g}", f"{_number(row.get('fees')):.5f}",
+            f"{_number(row.get('closed_pnl')):+.5f}", str(row.get("order_id") or "-"),
+        ])
+    if len(rows) == 1:
+        rows.append(["No exchange-confirmed exits in this period."] + [""] * 8)
+    exits_table = Table(rows, repeatRows=1, colWidths=[28*mm, 25*mm, 18*mm, 23*mm, 29*mm, 29*mm, 24*mm, 26*mm, 52*mm])
+    exits_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0c2f40")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f2f7f8")]),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#bed2d8")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (3, 1), (7, -1), "RIGHT"),
+        ("SPAN", (0, 1), (-1, 1)) if len(rows) == 2 and rows[1][0].startswith("No exchange") else ("LEFTPADDING", (0, 0), (0, 0), 4),
+    ]))
+    reconciliation = payload.get("reconciliation", {})
+    story.extend([
+        exits_table,
+        Spacer(1, 6 * mm),
+        Paragraph(
+            f"Exchange reconciliation: {str(reconciliation.get('status', 'pending')).upper()} | "
+            f"Tracked open: {reconciliation.get('tracked_open', 0)} | Exchange open: {reconciliation.get('exchange_open', 0)}",
+            styles["Normal"],
+        ),
+        Spacer(1, 2 * mm),
+        Paragraph("P&L and exits above come from Bybit closed P&L. Local events explain bot decisions and are not treated as exchange fills.", styles["Italic"]),
+    ])
+    document.build(story)
+    return output.getvalue()
+
+
+@app.get("/api/audit")
+def api_audit(
+    days: int = Query(7, ge=1, le=7),
+    symbol: str = Query("", max_length=30),
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    now_ms = int(time.time() * 1000)
+    since_ms = now_ms - days * 24 * 60 * 60 * 1000
+    wanted = symbol.strip().upper()
+    now = time.monotonic()
+    with audit_cache_lock:
+        cached = audit_pnl_cache.get(days)
+        if cached and cached[0] > now:
+            pnl = cached[1]
+        elif not settings.api_key or not settings.api_secret:
+            pnl = {"available": False, "error": "Demo API credentials are not configured", "rows": []}
+        else:
+            pnl = _pnl_status_since(since_ms)
+            audit_pnl_cache[days] = (now + 30, pnl)
+    payload = _audit_payload(since_ms, wanted, pnl, generated_at_ms=now_ms, period=f"{days}-day")
+    payload["days"] = days
+    return payload
+
+
+@app.get("/api/report/{period}.csv")
+def report_csv(period: str, _: str = Depends(require_auth)) -> Response:
+    payload, start, end = _report_payload(period)
+    filename = f"trading-report-{period}-{end:%Y-%m-%d}.csv"
+    return Response(
+        _report_csv(payload, start, end),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/report/{period}.pdf")
+def report_pdf(period: str, _: str = Depends(require_auth)) -> Response:
+    payload, start, end = _report_payload(period)
+    filename = f"trading-report-{period}-{end:%Y-%m-%d}.pdf"
+    return Response(
+        _report_pdf(payload, start, end),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/status")
@@ -371,6 +570,7 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
             "min_reward_risk": settings.min_reward_risk,
             "volume_multiplier": settings.volume_multiplier,
             "universe_size": settings.universe_size,
+            "order_retry_attempts": settings.order_retry_attempts,
         },
     }
 

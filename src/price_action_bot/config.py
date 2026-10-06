@@ -38,6 +38,7 @@ class Settings:
     volume_multiplier: float = 1.2
     universe_size: int = 10
     poll_seconds: int = 20
+    order_retry_attempts: int = 3
     database_path: str = "trading_bot.db"
     database_url: str = ""
     log_level: str = "INFO"
@@ -67,6 +68,7 @@ class Settings:
             volume_multiplier=float(os.getenv("VOLUME_MULTIPLIER", "1.2")),
             universe_size=int(os.getenv("UNIVERSE_SIZE", "10")),
             poll_seconds=int(os.getenv("POLL_SECONDS", "20")),
+            order_retry_attempts=int(os.getenv("ORDER_RETRY_ATTEMPTS", "3")),
             database_path=os.getenv("DATABASE_PATH", "trading_bot.db"),
             database_url=os.getenv("DATABASE_URL", ""),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -95,6 +97,8 @@ class Settings:
             raise ValueError("MAX_TOTAL_OPEN_RISK cannot exceed 0.05")
         if self.universe_size < 2 or self.universe_size > 25:
             raise ValueError("UNIVERSE_SIZE must be between 2 and 25")
+        if self.order_retry_attempts < 1 or self.order_retry_attempts > 5:
+            raise ValueError("ORDER_RETRY_ATTEMPTS must be between 1 and 5")
         if self.enable_order_placement and (not self.api_key or not self.api_secret):
             raise ValueError("API credentials are required when order placement is enabled")
         if not self.demo and self.live_trading_ack != "I_UNDERSTAND_LIVE_RISK":

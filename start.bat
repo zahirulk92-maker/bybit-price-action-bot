@@ -44,12 +44,14 @@ set "ENABLE_ORDER_PLACEMENT=true"
 set "RUN_ENGINE_IN_WEB=true"
 set "DASHBOARD_ALLOW_INSECURE_LOCAL=true"
 set "LEVERAGE=5"
+set "ORDER_RETRY_ATTEMPTS=3"
 set "PYTHONUTF8=1"
 
 echo.
 echo [SAFE MODE] Bybit Demo: ON
 echo [MODE] Demo order placement: ON
 echo [RISK] Leverage: 5x
+echo [EXECUTION] Safe retries: 3 with duplicate-order protection
 echo [MODE] Live trading: FORCED OFF
 echo [DASHBOARD] http://127.0.0.1:8000
 echo [STOP] Press Ctrl+C in this window.

@@ -70,6 +70,10 @@ The dashboard's **Real P&L · Bybit** section comes from Bybit's closed-PnL endp
 
 Open `/audit` from the dashboard's **Trade audit** button for a filterable 1/3/7-day record. The page deliberately labels Bybit closed-PnL rows as exchange truth and local strategy trades/events as local audit data. Telegram Alerts V3 also sends each newly observed Bybit closed-PnL row once, with actual net P&L and reported trading fees, while setup expiry, invalidation, risk blocks, and trailing-stop moves receive separate lifecycle alerts.
 
+The audit page can download **Daily CSV/PDF** and **Weekly CSV/PDF** reports. Daily reports begin at 00:00 Asia/Dhaka; weekly reports begin Monday at 00:00. CSV files are UTF-8 Excel-friendly flat exit records, while PDFs include the exchange-confirmed P&L summary, exit table, and reconciliation status.
+
+Entry orders use a deterministic Bybit `orderLinkId` and up to `ORDER_RETRY_ATTEMPTS=3` safe attempts. Before a submit or retry, the gateway checks Bybit open/recent orders and order history for that same ID. An ambiguous timeout is reconciled first, so the bot does not blindly send a duplicate market order.
+
 Chart support and resistance are confirmed 1h swing levels, not moving averages, so they do not follow every price tick. They update after a new closed 1h swing is confirmed. If live price crosses one first, the chart marks it as a broken support/resistance flip-watch level instead of silently moving the line.
 
 ## Risk-engine rollout plan (3 + 3 + 2)
@@ -84,7 +88,7 @@ The eight planned controls will not be enabled together. They are operational sa
 
 ### Phase 2 — exchange-quality guards (3)
 
-4. Exchange reconciliation: implemented for positions at startup, every minute, and before entry; unknown or side-mismatched positions block that symbol instead of being adopted automatically. Order-history reconciliation remains a later extension.
+4. Exchange reconciliation: implemented for positions at startup, every minute, and before entry; unknown or side-mismatched positions block that symbol instead of being adopted automatically. Entry retries also reconcile the deterministic client order ID against recent orders and order history.
 5. Slippage/spread guard: proposed starting maximum slippage is `0.15%`; tune it from Demo execution data rather than treating it as a permanent value.
 6. Liquidation-distance guard: reject a setup only when the planned stop does not have a safe buffer from liquidation at the configured leverage.
 

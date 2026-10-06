@@ -1,6 +1,9 @@
 import unittest
+import csv
+import io
 import time
 from dataclasses import replace
+from datetime import datetime
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -151,6 +154,48 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual(result["summary"]["exchange_exits"], 1)
         self.assertEqual(result["summary"]["local_trades"], 1)
         self.assertEqual(result["reconciliation"]["status"], "healthy")
+
+    def test_report_window_uses_dhaka_day_and_monday_week(self):
+        now = datetime(2026, 10, 7, 14, 30, tzinfo=web.DHAKA)
+        daily_start, daily_end = web._report_window("daily", now)
+        weekly_start, weekly_end = web._report_window("weekly", now)
+        self.assertEqual(daily_start.isoformat(), "2026-10-07T00:00:00+06:00")
+        self.assertEqual(weekly_start.isoformat(), "2026-10-05T00:00:00+06:00")
+        self.assertEqual(daily_end, now)
+        self.assertEqual(weekly_end, now)
+
+    def test_csv_report_is_excel_friendly_and_flat(self):
+        start = datetime(2026, 10, 7, tzinfo=web.DHAKA)
+        end = datetime(2026, 10, 7, 15, tzinfo=web.DHAKA)
+        payload = {
+            "period": "daily",
+            "summary": {"realized_pnl": 0.9, "fees": 0.1, "wins": 1, "losses": 0, "win_rate": 100, "exchange_exits": 1, "events": 4},
+            "exchange_exits": [{
+                "updated_at_ms": int(end.timestamp() * 1000), "symbol": "BTCUSDT",
+                "side": "Buy", "qty": 0.1, "entry": 100, "exit": 110,
+                "fees": 0.1, "closed_pnl": 0.9, "order_id": "close-1",
+            }],
+        }
+        content = web._report_csv(payload, start, end)
+        self.assertTrue(content.startswith(b"\xef\xbb\xbf"))
+        rows = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))
+        self.assertEqual(rows[0]["record_type"], "SUMMARY")
+        self.assertEqual(rows[1]["record_type"], "EXIT")
+        self.assertEqual(rows[1]["symbol"], "BTCUSDT")
+        self.assertEqual(rows[1]["net_realized_pnl"], "0.9")
+
+    def test_pdf_report_contains_a_real_pdf_document(self):
+        start = datetime(2026, 10, 6, tzinfo=web.DHAKA)
+        end = datetime(2026, 10, 7, 15, tzinfo=web.DHAKA)
+        payload = {
+            "period": "weekly",
+            "summary": {"realized_pnl": 2.4, "fees": 0.2, "exchange_exits": 2, "win_rate": 50, "events": 8},
+            "exchange_exits": [],
+            "reconciliation": {"status": "healthy", "tracked_open": 1, "exchange_open": 1},
+        }
+        content = web._report_pdf(payload, start, end)
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertGreater(len(content), 1500)
 
 
 if __name__ == "__main__":

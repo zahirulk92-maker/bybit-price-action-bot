@@ -11,6 +11,7 @@ dependencies = [
   "fastapi>=0.115,<1",
   "pybit>=5.12,<6",
   "psycopg[binary]>=3.2,<4",
+  "reportlab>=4,<5",
   "uvicorn[standard]>=0.34,<1",
 ]
 

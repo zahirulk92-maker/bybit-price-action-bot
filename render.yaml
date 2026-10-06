@@ -43,6 +43,8 @@ services:
         value: "10"
       - key: POLL_SECONDS
         value: "20"
+      - key: ORDER_RETRY_ATTEMPTS
+        value: "3"
       - key: LOG_LEVEL
         value: INFO
 

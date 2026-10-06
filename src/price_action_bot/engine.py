@@ -4,7 +4,6 @@ import logging
 import signal
 import threading
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from .analysis import detect_pattern, detect_trade_reversal, market_context, reward_risk, setup_checklist
@@ -504,8 +503,17 @@ class TradingEngine:
             return
 
         self.gateway.set_leverage(symbol, self.settings.leverage)
-        link_id = f"pa-{symbol[:8]}-{uuid.uuid4().hex[:12]}"
-        order_id = self.gateway.place_market_order(symbol, armed.pattern.side, qty, link_id)
+        side_code = "b" if armed.pattern.side == "Buy" else "s"
+        link_id = f"pa-{symbol[:8]}-{armed.pattern.timestamp_ms}-{side_code}"[:36]
+        self.store.event("ORDER_SUBMIT_REQUESTED", symbol, order_link_id=link_id, quantity=qty)
+        order_id = self.gateway.place_market_order(
+            symbol,
+            armed.pattern.side,
+            qty,
+            link_id,
+            attempts=self.settings.order_retry_attempts,
+        )
+        self.store.event("ORDER_ACCEPTED", symbol, order_link_id=link_id, order_id=order_id)
         try:
             position = self.gateway.wait_for_position(symbol)
             actual_entry = float(position["avgPrice"])
