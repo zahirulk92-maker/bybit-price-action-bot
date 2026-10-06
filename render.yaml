@@ -8,7 +8,6 @@ services:
     buildCommand: pip install -e .
     startCommand: uvicorn price_action_bot.web:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    maxShutdownDelaySeconds: 60
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -57,4 +56,4 @@ databases:
     ipAllowList: []
 
 previews:
-  generation: none
+  generation: off
