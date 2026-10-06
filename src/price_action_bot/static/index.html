@@ -53,7 +53,8 @@
     .chart-area { position:relative; min-height:440px; padding:11px 12px 8px; background:linear-gradient(180deg,rgba(5,18,27,.2),rgba(5,18,27,.55)); }
     .chart-meta { min-height:24px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; color:var(--muted); font-size:.68rem; font-variant-numeric:tabular-nums; padding:0 4px 5px; }
     .chart-meta span { padding:3px 7px; border:1px solid rgba(42,78,94,.65); border-radius:6px; background:rgba(14,34,48,.55); }
-    #chartCanvas { display:block; width:100%; height:420px; cursor:crosshair; }
+    #chartCanvas { display:none; width:100%; height:420px; cursor:crosshair; }
+    #tvChart { display:block; width:100%; height:420px; }
     .chart-loading { position:absolute; inset:45px 12px 8px; display:grid; place-items:center; color:var(--muted); background:rgba(6,19,28,.6); backdrop-filter:blur(2px); font-size:.82rem; }
     .chart-loading[hidden] { display:none; }
     .chart-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 13px; border-top:1px solid var(--line); background:rgba(6,19,28,.5); }
@@ -150,7 +151,7 @@
             <div><span class="label">Market chart · live candles <span id="chartStream" class="panel-note">connecting…</span></span><div class="symbol-line"><span id="chartSymbol" class="chart-symbol">Waiting…</span><span id="chartPrice" class="chart-price">—</span><span id="chartBias" class="bias range">—</span></div><span id="chartSubtitle" class="sub">5m entry chart · 1h support/resistance</span></div>
             <div class="timeframes" aria-label="Chart timeframe"><button class="tf active" type="button" data-interval="5">5m</button><button class="tf" type="button" data-interval="15">15m</button><button class="tf" type="button" data-interval="60">1h</button></div>
           </div>
-          <div class="chart-area"><div id="chartMeta" class="chart-meta">Waiting for candle data…</div><canvas id="chartCanvas" aria-label="Candlestick price chart"></canvas><div id="chartLoading" class="chart-loading">Loading chart…</div></div>
+          <div class="chart-area"><div id="chartMeta" class="chart-meta">Waiting for candle data…</div><div id="tvChart" aria-label="TradingView style candlestick price chart"></div><canvas id="chartCanvas" aria-hidden="true"></canvas><div id="chartLoading" class="chart-loading">Loading chart…</div></div>
           <div class="chart-tools" aria-label="Chart layers and drawing tools">
             <div class="tool-group"><span class="tool-group-label">Layers</span>
               <label class="tool-check"><input id="layerLevels" type="checkbox" checked> S/R</label>
@@ -208,9 +209,10 @@
     <footer>Worker control pauses new entries only. Existing positions continue to be protected and managed.</footer>
   </div>
 
+  <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { enabled:false, markets:[], decisions:[], journal:[], openTrades:[], selected:"", interval:"5", chart:null, request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
+    const state = { enabled:false, markets:[], decisions:[], journal:[], openTrades:[], selected:"", interval:"5", chart:null, chartKey:"", request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, tvChart:null, tvCandle:null, tvVolume:null, tvLines:[], tvPrimed:false, tvBarSpacing:8, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
     const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff", amber:"#ffc85a" };
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
@@ -287,7 +289,7 @@
     }
     async function loadChart(){
       if(!state.selected)return; const request=++state.request; $('chartLoading').hidden=false; $('chartLoading').textContent='Loading chart…';
-      try{ const response=await fetch(`/api/chart/${encodeURIComponent(state.selected)}?interval=${state.interval}&limit=180`,{cache:'no-store'}); if(!response.ok)throw new Error(`Chart request failed (${response.status})`); const data=await response.json(); if(request!==state.request)return; state.chart=data; drawChart(); openChartStream(); }
+      try{ const response=await fetch(`/api/chart/${encodeURIComponent(state.selected)}?interval=${state.interval}&limit=180`,{cache:'no-store'}); if(!response.ok)throw new Error(`Chart request failed (${response.status})`); const data=await response.json(); if(request!==state.request)return; const key=`${state.selected}:${state.interval}`; if(state.chartKey!==key){state.chartKey=key;state.tvPrimed=false;state.tvBarSpacing=8;state.view=null;} state.chart=data; drawChart(); openChartStream(); }
       catch(error){ if(request!==state.request)return; setStreamState('polling fallback'); $('chartLoading').textContent=error.message; }
     }
 
@@ -325,6 +327,31 @@
       state.view={start,count:visibleCount};state.chartView={all,candles,left,plotW,step,top,priceBottom,allStart:start};candleMeta(candles[candles.length-1]);$('chartLoading').hidden=true;
     }
 
+    function ensureTvChart(){
+      if(state.tvChart)return state.tvChart;
+      if(!window.LightweightCharts){$('chartLoading').textContent='TradingView chart library unavailable';return null;}
+      state.tvChart=LightweightCharts.createChart($('tvChart'),{layout:{background:{type:'solid',color:'#071923'},textColor:'#82a6ba'},grid:{vertLines:{color:'#102d3a'},horzLines:{color:'#102d3a'}},crosshair:{mode:LightweightCharts.CrosshairMode.Normal},rightPriceScale:{borderColor:'#244554',scaleMargins:{top:.08,bottom:.2}},timeScale:{borderColor:'#244554',timeVisible:true,secondsVisible:false,rightOffset:4,barSpacing:8},handleScroll:{mouseWheel:true,pressedMouseMove:true},handleScale:{mouseWheel:true,pinch:true,axisPressedMouseMove:true}});
+      state.tvCandle=state.tvChart.addCandlestickSeries({upColor:'#24d3ad',downColor:'#f35f73',borderUpColor:'#24d3ad',borderDownColor:'#f35f73',wickUpColor:'#24d3ad',wickDownColor:'#f35f73',priceLineColor:'#68b7ff',priceLineWidth:1});
+      state.tvVolume=state.tvChart.addHistogramSeries({priceFormat:{type:'volume'},priceScaleId:'',color:'#24566a'});state.tvChart.priceScale('').applyOptions({scaleMargins:{top:.82,bottom:0}});
+      new ResizeObserver(entries=>{const box=entries[0]?.contentRect;if(box)state.tvChart.resize(Math.max(300,box.width),Math.max(260,box.height));}).observe($('tvChart'));
+      return state.tvChart;
+    }
+    function tvLine(data,color,title){const series=state.tvChart.addLineSeries({color,lineWidth:1,priceLineVisible:false,lastValueVisible:true,title});series.setData(data);state.tvLines.push(series);}
+    function drawTradingViewChart(){
+      const data=state.chart,chart=ensureTvChart(); if(!chart||!data?.candles?.length)return;
+      const candles=data.candles.map(c=>({time:Math.floor(Number(c.time)/1000),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)})).filter(c=>c.time&&[c.open,c.high,c.low,c.close].every(Number.isFinite));
+      const volume=data.candles.map(c=>({time:Math.floor(Number(c.time)/1000),value:Number(c.volume)||0,color:Number(c.close)>=Number(c.open)?'rgba(36,211,173,.45)':'rgba(243,95,115,.45)'}));
+      if(!candles.length)return; state.tvCandle.setData(candles);state.tvVolume.setData(volume);
+      state.tvLines.forEach(series=>chart.removeSeries(series));state.tvLines=[];const times=candles.map(c=>c.time),lastTime=times[times.length-1];
+      const horizontal=(value,color,title)=>{const n=Number(value);if(!Number.isFinite(n)||n<=0)return;tvLine([{time:times[0],value:n},{time:lastTime,value:n}],color,title);};
+      if(state.layers.levels){horizontal(data.support,colors.mint,'Support');horizontal(data.resistance,colors.red,'Resistance');}
+      const activeTrade=state.openTrades.find(row=>row.symbol===state.selected)?.trade;
+      if(activeTrade){horizontal(activeTrade.entry,colors.blue,'ENTRY');horizontal(activeTrade.stop,colors.red,'SL');horizontal(activeTrade.one_r_target,colors.mint,'TP1');horizontal(activeTrade.tp2_target,'#c48cff','TP2');horizontal(activeTrade.target,colors.amber,'TP3');}
+      const values=candles.map(c=>c.close),seriesFn=(kind,p)=>kind==='ema'?ema(values,p):sma(values,p),lineColors={9:'#68b7ff',21:'#ffc85a',50:'#c48cff',200:'#ff8f70'};
+      [['ma',state.layers.ma],['ema',state.layers.ema]].forEach(([kind,periods])=>periods.forEach(period=>{const vals=seriesFn(kind,period).map((value,i)=>value===null?null:{time:times[i],value}).filter(Boolean);if(vals.length)tvLine(vals,lineColors[period],`${kind.toUpperCase()} ${period}`);}));
+      if(!state.tvPrimed){chart.timeScale().fitContent();state.tvPrimed=true;} candleMeta(data.candles[data.candles.length-1]);$('chartLoading').hidden=true;
+    }
+    const legacyDrawChart=drawChart; drawChart=drawTradingViewChart;
     $('chartCanvas').addEventListener('mousemove',event=>{const v=state.chartView;if(!v)return;const rect=event.currentTarget.getBoundingClientRect(),px=event.clientX-rect.left,py=event.clientY-rect.top,i=Math.max(0,Math.min(v.candles.length-1,Math.floor((px-v.left)/v.step)));state.crosshair={x:Math.max(0,Math.min(1,(px-v.left)/v.plotW)),y:Math.max(0,Math.min(1,(py-v.top)/(v.priceBottom-v.top)))};candleMeta(v.candles[i]);if(state.pan){const delta=Math.round((state.pan.startX-px)/v.step);state.view.start=Math.max(0,Math.min(v.all.length-(state.view?.count||v.candles.length),state.pan.startStart+delta));}drawChart();});
     $('chartCanvas').addEventListener('mouseleave',()=>{state.crosshair=null;const c=state.chartView?.candles;candleMeta(c?.[c.length-1]);drawChart();});
     function chartPoint(event){const v=state.chartView,rect=$('chartCanvas').getBoundingClientRect();if(!v)return null;return {x:Math.max(0,Math.min(1,(event.clientX-rect.left-v.left)/v.plotW)),y:Math.max(0,Math.min(1,(event.clientY-rect.top-v.top)/(v.priceBottom-v.top)))};}
@@ -335,9 +362,9 @@
     document.querySelectorAll('[id^="layer"], .indicator-toggle').forEach(input=>input.addEventListener('change',()=>{if(input.classList.contains('indicator-toggle')){const kind=input.dataset.kind,period=Number(input.dataset.period);state.layers[kind]=input.checked?[...new Set([...state.layers[kind],period])]:state.layers[kind].filter(v=>v!==period);}else{const key=input.id.replace('layer','').toLowerCase();state.layers[key]=input.checked;}drawChart();}));
     document.querySelectorAll('[data-draw]').forEach(button=>button.addEventListener('click',()=>{state.drawMode=button.dataset.draw;document.querySelectorAll('[data-draw]').forEach(b=>b.classList.toggle('active',b===button));$('chartCanvas').style.cursor=state.drawMode==='cursor'?'crosshair':'cell';}));
     $('clearDrawings').addEventListener('click',()=>{state.drawings=[];state.draft=null;drawChart();});
-    $('zoomIn').addEventListener('click',()=>{if(!state.chartView)return;state.view={start:Math.min(state.view.start+6,state.chartView.all.length-35),count:Math.max(35,state.view.count-12)};drawChart();});
-    $('zoomOut').addEventListener('click',()=>{if(!state.chartView)return;const count=Math.min(state.chartView.all.length,state.view.count+12);state.view={start:Math.max(0,state.view.start-6),count};drawChart();});
-    $('resetView').addEventListener('click',()=>{state.view=null;state.crosshair=null;drawChart();});
+    $('zoomIn').addEventListener('click',()=>{if(!state.tvChart)return;state.tvBarSpacing=Math.min(24,state.tvBarSpacing+2);state.tvChart.timeScale().applyOptions({barSpacing:state.tvBarSpacing});});
+    $('zoomOut').addEventListener('click',()=>{if(!state.tvChart)return;state.tvBarSpacing=Math.max(3,state.tvBarSpacing-2);state.tvChart.timeScale().applyOptions({barSpacing:state.tvBarSpacing});});
+    $('resetView').addEventListener('click',()=>{state.view=null;state.crosshair=null;if(state.tvChart){state.tvBarSpacing=8;state.tvChart.timeScale().applyOptions({barSpacing:8});state.tvChart.timeScale().fitContent();}drawChart();});
     $('journalFilter').addEventListener('change',renderJournal);
     document.querySelectorAll('.tf').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tf').forEach(b=>b.classList.remove('active'));button.classList.add('active');state.interval=button.dataset.interval;state.view=null;$('chartSubtitle').textContent=`${button.textContent} chart · 1h support/resistance`;loadChart();}));
     $('controlButton').addEventListener('click',async()=>{const button=$('controlButton');button.disabled=true;try{const response=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!state.enabled})});if(!response.ok)throw new Error(`Control update failed (${response.status})`);await refresh();}catch(error){showError(error.message);button.disabled=false;}});
