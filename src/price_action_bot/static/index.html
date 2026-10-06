@@ -147,7 +147,7 @@
       <main class="left-stack">
         <section class="panel">
           <div class="panel-head">
-            <div><span class="label">Market chart · live candles</span><div class="symbol-line"><span id="chartSymbol" class="chart-symbol">Waiting…</span><span id="chartPrice" class="chart-price">—</span><span id="chartBias" class="bias range">—</span></div><span id="chartSubtitle" class="sub">5m entry chart · 1h support/resistance</span></div>
+            <div><span class="label">Market chart · live candles <span id="chartStream" class="panel-note">connecting…</span></span><div class="symbol-line"><span id="chartSymbol" class="chart-symbol">Waiting…</span><span id="chartPrice" class="chart-price">—</span><span id="chartBias" class="bias range">—</span></div><span id="chartSubtitle" class="sub">5m entry chart · 1h support/resistance</span></div>
             <div class="timeframes" aria-label="Chart timeframe"><button class="tf active" type="button" data-interval="5">5m</button><button class="tf" type="button" data-interval="15">15m</button><button class="tf" type="button" data-interval="60">1h</button></div>
           </div>
           <div class="chart-area"><div id="chartMeta" class="chart-meta">Waiting for candle data…</div><canvas id="chartCanvas" aria-label="Candlestick price chart"></canvas><div id="chartLoading" class="chart-loading">Loading chart…</div></div>
@@ -210,7 +210,7 @@
 
   <script>
     const $ = id => document.getElementById(id);
-    const state = { enabled:false, markets:[], decisions:[], journal:[], selected:"", interval:"5", chart:null, request:0, view:null, crosshair:null, pan:null, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
+    const state = { enabled:false, markets:[], decisions:[], journal:[], selected:"", interval:"5", chart:null, request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
     const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff" };
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
@@ -259,10 +259,34 @@
     }
     function selectSymbol(symbol){ if(symbol===state.selected)return; state.selected=symbol; document.querySelectorAll('.watch-row').forEach(r=>r.classList.toggle('active',r.dataset.symbol===symbol)); const m=state.markets.find(x=>x.symbol===symbol); if(m)updateChartHeading(m); renderDecision(); loadChart(); }
 
+    function setStreamState(label, live=false){ const el=$('chartStream'); el.textContent=label; el.style.color=live?colors.mint:colors.text; }
+    function closeChartStream(){ if(state.socketTimer){clearTimeout(state.socketTimer);state.socketTimer=null;} if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null;} state.socketKey=""; }
+    function openChartStream(){
+      const symbol=state.selected, topic=`kline.${state.interval}.${symbol}`;
+      if(state.socket&&state.socketKey===topic)return;
+      closeChartStream(); if(!state.selected){return;}
+      setStreamState('connecting…');
+      let socket;
+      try{ socket=new WebSocket('wss://stream.bybit.com/v5/public/linear'); state.socket=socket; state.socketKey=topic; }
+      catch(error){ setStreamState('polling fallback'); return; }
+      socket.onopen=()=>{setStreamState('LIVE',true);socket.send(JSON.stringify({op:'subscribe',args:[topic]}));};
+      socket.onmessage=event=>{
+        try{
+          const message=JSON.parse(event.data); if(message.topic!==topic||!Array.isArray(message.data)||!message.data.length||!state.chart)return;
+          const row=message.data[0], candle={time:Number(row.start),open:Number(row.open),high:Number(row.high),low:Number(row.low),close:Number(row.close),volume:Number(row.volume)};
+          if(!candle.time||[candle.open,candle.high,candle.low,candle.close,candle.volume].some(v=>!Number.isFinite(v)))return;
+          const candles=state.chart.candles||[], last=candles[candles.length-1];
+          if(last&&Number(last.time)===candle.time)candles[candles.length-1]=candle; else if(!last||candle.time>Number(last.time)){candles.push(candle);if(candles.length>180)candles.splice(0,candles.length-180);}
+          state.chart.candles=candles; $('chartPrice').textContent=fmt(candle.close); drawChart();
+        }catch(error){/* ignore malformed heartbeat frames */}
+      };
+      socket.onerror=()=>{setStreamState('polling fallback');};
+      socket.onclose=()=>{if(state.socket===socket){state.socket=null;setStreamState('reconnecting…');state.socketTimer=setTimeout(()=>openChartStream(),5000);}};
+    }
     async function loadChart(){
       if(!state.selected)return; const request=++state.request; $('chartLoading').hidden=false; $('chartLoading').textContent='Loading chart…';
-      try{ const response=await fetch(`/api/chart/${encodeURIComponent(state.selected)}?interval=${state.interval}&limit=180`,{cache:'no-store'}); if(!response.ok)throw new Error(`Chart request failed (${response.status})`); const data=await response.json(); if(request!==state.request)return; state.chart=data; drawChart(); }
-      catch(error){ if(request!==state.request)return; $('chartLoading').textContent=error.message; }
+      try{ const response=await fetch(`/api/chart/${encodeURIComponent(state.selected)}?interval=${state.interval}&limit=180`,{cache:'no-store'}); if(!response.ok)throw new Error(`Chart request failed (${response.status})`); const data=await response.json(); if(request!==state.request)return; state.chart=data; drawChart(); openChartStream(); }
+      catch(error){ if(request!==state.request)return; setStreamState('polling fallback'); $('chartLoading').textContent=error.message; }
     }
 
     function candleMeta(c){ if(!c){$('chartMeta').textContent='No candle data';return;} $('chartMeta').innerHTML=`<span>O ${fmt(c.open)}</span><span>H ${fmt(c.high)}</span><span>L ${fmt(c.low)}</span><span>C ${fmt(c.close)}</span><span class="${c.close>=c.open?'bullish':'bearish'}">VOL ${fmt(c.volume,5)}</span>`; }
@@ -311,7 +335,7 @@
     function showError(message){$('notice').textContent=message;$('notice').style.display='block';}
     async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error(`Dashboard request failed (${response.status})`);const before=state.selected;renderStatus(await response.json());$('notice').style.display='none';if(!state.chart||before!==state.selected)loadChart();}catch(error){showError(error.message);$('workerDot').className='dot offline';$('workerText').textContent='Disconnected';}}
     new ResizeObserver(()=>{if(state.chart)drawChart();}).observe($('chartCanvas'));
-    refresh();setInterval(refresh,10000);setInterval(()=>{if(state.selected)loadChart();},60000);
+    refresh();setInterval(refresh,10000);setInterval(()=>{if(state.selected)loadChart();},15000);
   </script>
 </body>
 </html>
