@@ -53,13 +53,46 @@ class ChartApiTests(unittest.TestCase):
             web.store, "trading_enabled", return_value=True
         ), patch.object(web.store, "market_snapshots", return_value=[]), patch.object(
             web.store, "recent_trades", return_value=[]
+        ), patch.object(
+            web.store, "events_since", return_value=[]
         ), patch.object(web.store, "recent_events", return_value=[]):
-            result = web.api_status("test")
+            with patch.object(
+                web.chart_gateway,
+                "wallet_summary",
+                return_value={
+                    "equity": 1000.0,
+                    "wallet_balance": 990.0,
+                    "available_balance": 900.0,
+                    "unrealized_pnl": 10.0,
+                },
+            ):
+                web.wallet_cache = None
+                result = web.api_status("test")
         self.assertEqual(result["scanner"]["status"], "healthy")
         self.assertEqual(result["scanner"]["scanned_symbols"], 10)
         self.assertLess(result["scanner"]["last_scan_age_ms"], 10_000)
         self.assertEqual(result["safety"]["execution"], "SIGNAL ONLY")
         self.assertEqual(result["safety"]["risk_guard"], "ACTIVE")
+        if web.settings.api_key and web.settings.api_secret:
+            self.assertEqual(result["wallet"]["equity"], 1000.0)
+        self.assertEqual(result["today"]["opened"], 0)
+
+    def test_today_summary_counts_exit_types_and_trailing(self):
+        events = [
+            {"event_type": "POSITION_OPENED"},
+            {"event_type": "POSITION_OPENED"},
+            {"event_type": "TP3_CLOSED"},
+            {"event_type": "STOP_LOSS_CLOSED"},
+            {"event_type": "PARTIAL_TP"},
+        ]
+        trades = [{"status": "open", "trade": {"state": "TRAILING"}}]
+        with patch.object(web.store, "events_since", return_value=events):
+            result = web._today_summary(trades)
+        self.assertEqual(result["opened"], 2)
+        self.assertEqual(result["closed"], 2)
+        self.assertEqual(result["tp_closed"], 1)
+        self.assertEqual(result["sl_closed"], 1)
+        self.assertEqual(result["trailing_active"], 1)
 
 
 if __name__ == "__main__":

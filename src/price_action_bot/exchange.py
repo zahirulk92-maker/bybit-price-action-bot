@@ -95,11 +95,20 @@ class BybitGateway:
         return rules
 
     def equity_usdt(self) -> float:
+        return self.wallet_summary()["equity"]
+
+    def wallet_summary(self) -> dict[str, float]:
         response = self._check(self.session.get_wallet_balance(accountType="UNIFIED"))
         accounts = response["result"]["list"]
         if not accounts:
             raise RuntimeError("No unified account balance returned")
-        return float(accounts[0]["totalEquity"])
+        account = accounts[0]
+        return {
+            "equity": float(account.get("totalEquity") or 0),
+            "wallet_balance": float(account.get("totalWalletBalance") or 0),
+            "available_balance": float(account.get("totalAvailableBalance") or 0),
+            "unrealized_pnl": float(account.get("totalPerpUPL") or 0),
+        }
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
         try:

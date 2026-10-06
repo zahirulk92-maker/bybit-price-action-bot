@@ -62,7 +62,7 @@ BYBIT_DEMO=true
 ENABLE_ORDER_PLACEMENT=true
 ```
 
-Then restart the bot. It sets 3× leverage before entry and places exchange-side stop-loss/take-profit protection immediately after confirming the fill. Configure the account/contract for isolated margin and one-way position mode in Bybit Demo Trading before enabling orders.
+Then restart the bot. It sets 5× leverage before entry, places the exchange-side stop-loss immediately after confirming the fill, and manages TP1/TP2/TP3 as staged exits. Configure the account/contract for isolated margin and one-way position mode in Bybit Demo Trading before enabling orders.
 
 ## Tests
 

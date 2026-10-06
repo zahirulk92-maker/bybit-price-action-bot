@@ -129,7 +129,13 @@ class TradingEngine:
         for event in events:
             counts[event["event_type"]] = counts.get(event["event_type"], 0) + 1
         opened = counts.get("POSITION_OPENED", 0)
-        closed = counts.get("POSITION_CLOSED", 0) + counts.get("TP3_CLOSED", 0)
+        closed = sum(
+            counts.get(name, 0)
+            for name in (
+                "POSITION_CLOSED", "TP3_CLOSED", "STOP_LOSS_CLOSED",
+                "TRAILING_STOP_CLOSED", "EARLY_EXIT_REVERSAL",
+            )
+        )
         report = (
             "📊 DAILY TRADING REPORT\n"
             "━━━━━━━━━━━━━━━━\n"
@@ -140,6 +146,7 @@ class TradingEngine:
             f"💰 TP1 / TP2 / TP3: {counts.get('PARTIAL_TP', 0)} / "
             f"{counts.get('PARTIAL_TP2', 0)} / {counts.get('TP3_CLOSED', 0)}\n"
             f"⚠️ Reversal exits: {counts.get('EARLY_EXIT_REVERSAL', 0)}\n"
+            f"🛡 SL / trailing exits: {counts.get('STOP_LOSS_CLOSED', 0)} / {counts.get('TRAILING_STOP_CLOSED', 0)}\n"
             f"🛑 Risk/emergency events: {counts.get('EMERGENCY_CLOSE_UNPROTECTED', 0) + counts.get('TRADE_MANAGEMENT_ERROR', 0)}\n"
             f"📌 Open now: {len(self.trades)}\n"
             f"🟢 Bot: {'ACTIVE' if self.settings.enable_order_placement else 'SIGNAL ONLY / DEMO'}"
@@ -472,10 +479,30 @@ class TradingEngine:
             try:
                 position = self.gateway.position(symbol)
                 if not position:
-                    self.store.event("POSITION_CLOSED", symbol)
+                    close_event = (
+                        "TRAILING_STOP_CLOSED"
+                        if trade.state == SignalState.TRAILING
+                        else "STOP_LOSS_CLOSED"
+                    )
+                    self.store.event(
+                        close_event,
+                        symbol,
+                        side=trade.side,
+                        entry=trade.entry,
+                        protective_stop=trade.stop,
+                    )
                     self.store.close_trade(symbol)
                     self.trades.pop(symbol, None)
-                    self.notifier.send(f"✅ POSITION CLOSED\n📌 Pair: {symbol}\nℹ️ Exchange position is no longer open")
+                    close_label = "TRAILING STOP" if close_event == "TRAILING_STOP_CLOSED" else "STOP LOSS"
+                    self.notifier.send(
+                        f"🛑 {close_label} CLOSED · DEMO\n"
+                        "━━━━━━━━━━━━━━━━\n"
+                        f"📌 Pair: {symbol}\n"
+                        f"📊 Position: {_side_label(trade.side)}\n"
+                        f"💵 Entry: {trade.entry:.8g}\n"
+                        f"🛡 Final stop: {trade.stop:.8g}\n"
+                        "✅ Position is no longer open"
+                    )
                     continue
                 price = prices.get(symbol) or float(position["markPrice"])
                 if trade.tp2_target <= 0:
@@ -618,6 +645,14 @@ class TradingEngine:
         self.refresh_universe(force=True)
         mode = "DEMO ORDERS" if self.settings.enable_order_placement else "SIGNAL ONLY"
         LOGGER.warning("Bot started in %s mode", mode)
+        self.notifier.send(
+            "🚀 PRICE ACTION BOT STARTED · ALERTS V2\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"🧪 Mode: {mode}\n"
+            f"⚙️ Leverage: {self.settings.leverage}×\n"
+            f"📌 Universe: {len(self.symbols)} symbols\n"
+            "✅ Structured Telegram alerts are active"
+        )
         started_at_ms = int(time.time() * 1000)
         self.store.heartbeat(
             "running",

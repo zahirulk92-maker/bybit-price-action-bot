@@ -28,7 +28,7 @@ services:
       - key: RUN_ENGINE_IN_WEB
         value: "true"
       - key: LEVERAGE
-        value: "3"
+        value: "5"
       - key: RISK_PER_TRADE
         value: "0.005"
       - key: MAX_OPEN_POSITIONS

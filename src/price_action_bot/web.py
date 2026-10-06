@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -29,6 +30,59 @@ engine_host_stop = threading.Event()
 engine_ref: dict[str, TradingEngine] = {}
 chart_cache_lock = threading.Lock()
 chart_cache: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
+wallet_cache_lock = threading.Lock()
+wallet_cache: tuple[float, dict[str, object]] | None = None
+
+
+def _wallet_status() -> dict[str, object]:
+    global wallet_cache
+    if not settings.api_key or not settings.api_secret:
+        return {"available": False, "error": "Demo API credentials are not configured"}
+    now = time.monotonic()
+    with wallet_cache_lock:
+        if wallet_cache and wallet_cache[0] > now:
+            return wallet_cache[1]
+    try:
+        payload: dict[str, object] = {"available": True, **chart_gateway.wallet_summary()}
+    except Exception as exc:
+        LOGGER.warning("Wallet summary unavailable: %s", exc)
+        payload = {"available": False, "error": "Bybit wallet temporarily unavailable"}
+    with wallet_cache_lock:
+        wallet_cache = (now + 15, payload)
+    return payload
+
+
+def _today_summary(open_trades: list[dict[str, object]]) -> dict[str, int]:
+    dhaka = timezone(timedelta(hours=6))
+    now = datetime.now(dhaka)
+    start = datetime.combine(now.date(), datetime.min.time(), tzinfo=dhaka)
+    events = store.events_since(int(start.timestamp() * 1000), limit=2000)
+    counts: dict[str, int] = {}
+    for event in events:
+        event_type = str(event["event_type"])
+        counts[event_type] = counts.get(event_type, 0) + 1
+    open_rows = [row for row in open_trades if row.get("status") == "open"]
+    trailing = sum(
+        str((row.get("trade") or {}).get("state", "")) == "TRAILING" for row in open_rows
+    )
+    tp_closed = counts.get("TP3_CLOSED", 0)
+    sl_closed = counts.get("STOP_LOSS_CLOSED", 0)
+    trailing_closed = counts.get("TRAILING_STOP_CLOSED", 0)
+    reversal_closed = counts.get("EARLY_EXIT_REVERSAL", 0)
+    other_closed = counts.get("POSITION_CLOSED", 0)
+    return {
+        "opened": counts.get("POSITION_OPENED", 0),
+        "closed": tp_closed + sl_closed + trailing_closed + reversal_closed + other_closed,
+        "remaining": len(open_rows),
+        "tp_closed": tp_closed,
+        "sl_closed": sl_closed,
+        "trailing_closed": trailing_closed,
+        "reversal_closed": reversal_closed,
+        "other_closed": other_closed,
+        "tp1_hits": counts.get("PARTIAL_TP", 0),
+        "tp2_hits": counts.get("PARTIAL_TP2", 0),
+        "trailing_active": trailing,
+    }
 
 
 def _run_embedded_engine() -> None:
@@ -141,18 +195,21 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "max_positions": settings.max_open_positions,
         "max_total_risk": settings.max_total_open_risk,
     }
+    trades = store.recent_trades(100)
     return {
         "environment": "demo" if settings.demo else "live",
         "execution": "orders" if settings.enable_order_placement else "signals",
         "worker_online": heartbeat_age is not None and heartbeat_age < 90_000,
         "heartbeat": heartbeat,
         "scanner": scanner,
+        "wallet": _wallet_status(),
+        "today": _today_summary(trades),
         "safety": safety,
         "trading_enabled": store.trading_enabled(),
         "markets": store.market_snapshots(),
         "decisions": store.decision_snapshots(),
         "signal_journal": store.recent_signal_journal(100),
-        "open_trades": store.recent_trades(100),
+        "open_trades": trades,
         "events": store.recent_events(40),
         "strategy": {
             "leverage": settings.leverage,

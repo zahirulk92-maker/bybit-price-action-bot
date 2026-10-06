@@ -30,7 +30,7 @@ class Settings:
     demo: bool = True
     enable_order_placement: bool = False
     live_trading_ack: str = ""
-    leverage: int = 3
+    leverage: int = 5
     risk_per_trade: float = 0.005
     max_open_positions: int = 3
     max_total_open_risk: float = 0.015
@@ -59,7 +59,7 @@ class Settings:
             demo=_bool("BYBIT_DEMO", True),
             enable_order_placement=_bool("ENABLE_ORDER_PLACEMENT", False),
             live_trading_ack=os.getenv("LIVE_TRADING_ACK", ""),
-            leverage=int(os.getenv("LEVERAGE", "3")),
+            leverage=int(os.getenv("LEVERAGE", "5")),
             risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.005")),
             max_open_positions=int(os.getenv("MAX_OPEN_POSITIONS", "3")),
             max_total_open_risk=float(os.getenv("MAX_TOTAL_OPEN_RISK", "0.015")),
