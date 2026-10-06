@@ -55,6 +55,8 @@
     .chart-meta span { padding:3px 7px; border:1px solid rgba(42,78,94,.65); border-radius:6px; background:rgba(14,34,48,.55); }
     #chartCanvas { display:none; width:100%; height:420px; cursor:crosshair; }
     #tvChart { display:block; width:100%; height:420px; }
+    #tvRsi { display:none; width:100%; height:105px; border-top:1px solid var(--line); }
+    #tvRsi.visible { display:block; }
     .chart-loading { position:absolute; inset:45px 12px 8px; display:grid; place-items:center; color:var(--muted); background:rgba(6,19,28,.6); backdrop-filter:blur(2px); font-size:.82rem; }
     .chart-loading[hidden] { display:none; }
     .chart-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 13px; border-top:1px solid var(--line); background:rgba(6,19,28,.5); }
@@ -151,7 +153,7 @@
             <div><span class="label">Market chart · live candles <span id="chartStream" class="panel-note">connecting…</span></span><div class="symbol-line"><span id="chartSymbol" class="chart-symbol">Waiting…</span><span id="chartPrice" class="chart-price">—</span><span id="chartBias" class="bias range">—</span></div><span id="chartSubtitle" class="sub">5m entry chart · 1h support/resistance</span></div>
             <div class="timeframes" aria-label="Chart timeframe"><button class="tf active" type="button" data-interval="5">5m</button><button class="tf" type="button" data-interval="15">15m</button><button class="tf" type="button" data-interval="60">1h</button></div>
           </div>
-          <div class="chart-area"><div id="chartMeta" class="chart-meta">Waiting for candle data…</div><div id="tvChart" aria-label="TradingView style candlestick price chart"></div><canvas id="chartCanvas" aria-hidden="true"></canvas><div id="chartLoading" class="chart-loading">Loading chart…</div></div>
+          <div class="chart-area"><div id="chartMeta" class="chart-meta">Waiting for candle data…</div><div id="tvChart" aria-label="TradingView style candlestick price chart"></div><div id="tvRsi" aria-label="Relative strength index pane"></div><canvas id="chartCanvas" aria-hidden="true"></canvas><div id="chartLoading" class="chart-loading">Loading chart…</div></div>
           <div class="chart-tools" aria-label="Chart layers and drawing tools">
             <div class="tool-group"><span class="tool-group-label">Layers</span>
               <label class="tool-check"><input id="layerLevels" type="checkbox" checked> S/R</label>
@@ -212,7 +214,7 @@
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { enabled:false, markets:[], decisions:[], journal:[], openTrades:[], selected:"", interval:"5", chart:null, chartKey:"", request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, tvChart:null, tvCandle:null, tvVolume:null, tvLines:[], tvPrimed:false, tvBarSpacing:8, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
+    const state = { enabled:false, markets:[], decisions:[], journal:[], openTrades:[], selected:"", interval:"5", chart:null, chartKey:"", request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, tvChart:null, tvCandle:null, tvVolume:null, tvLines:[], tvRsiChart:null, tvRsiLine:null, tvPrimed:false, tvBarSpacing:8, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
     const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff", amber:"#ffc85a" };
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
@@ -263,7 +265,7 @@
     }
     function selectSymbol(symbol){ if(symbol===state.selected)return; state.selected=symbol; document.querySelectorAll('.watch-row').forEach(r=>r.classList.toggle('active',r.dataset.symbol===symbol)); const m=state.markets.find(x=>x.symbol===symbol); if(m)updateChartHeading(m); renderDecision(); loadChart(); }
 
-    function setStreamState(label, live=false){ const el=$('chartStream'); el.textContent=label; el.style.color=live?colors.mint:colors.text; }
+    function setStreamState(label, live=false){ const el=$('chartStream'); el.textContent=`BYBIT · ${label}`; el.style.color=live?colors.mint:colors.text; }
     function closeChartStream(){ if(state.socketTimer){clearTimeout(state.socketTimer);state.socketTimer=null;} if(state.socket){state.socket.onclose=null;state.socket.close();state.socket=null;} state.socketKey=""; }
     function openChartStream(){
       const symbol=state.selected, topic=`kline.${state.interval}.${symbol}`;
@@ -334,6 +336,9 @@
       state.tvCandle=state.tvChart.addCandlestickSeries({upColor:'#24d3ad',downColor:'#f35f73',borderUpColor:'#24d3ad',borderDownColor:'#f35f73',wickUpColor:'#24d3ad',wickDownColor:'#f35f73',priceLineColor:'#68b7ff',priceLineWidth:1});
       state.tvVolume=state.tvChart.addHistogramSeries({priceFormat:{type:'volume'},priceScaleId:'',color:'#24566a'});state.tvChart.priceScale('').applyOptions({scaleMargins:{top:.82,bottom:0}});
       new ResizeObserver(entries=>{const box=entries[0]?.contentRect;if(box)state.tvChart.resize(Math.max(300,box.width),Math.max(260,box.height));}).observe($('tvChart'));
+      state.tvRsiChart=LightweightCharts.createChart($('tvRsi'),{layout:{background:{type:'solid',color:'#071923'},textColor:'#82a6ba'},grid:{vertLines:{color:'#102d3a'},horzLines:{color:'#102d3a'}},rightPriceScale:{borderColor:'#244554',scaleMargins:{top:.12,bottom:.12}},timeScale:{visible:false},crosshair:{mode:LightweightCharts.CrosshairMode.Normal},handleScroll:false,handleScale:false});
+      state.tvRsiLine=state.tvRsiChart.addLineSeries({color:'#c48cff',lineWidth:1,priceLineVisible:false,lastValueVisible:true,title:'RSI 14'});
+      new ResizeObserver(entries=>{const box=entries[0]?.contentRect;if(box)state.tvRsiChart.resize(Math.max(300,box.width),Math.max(80,box.height));}).observe($('tvRsi'));
       return state.tvChart;
     }
     function tvLine(data,color,title){const series=state.tvChart.addLineSeries({color,lineWidth:1,priceLineVisible:false,lastValueVisible:true,title});series.setData(data);state.tvLines.push(series);}
@@ -342,6 +347,9 @@
       const candles=data.candles.map(c=>({time:Math.floor(Number(c.time)/1000),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)})).filter(c=>c.time&&[c.open,c.high,c.low,c.close].every(Number.isFinite));
       const volume=data.candles.map(c=>({time:Math.floor(Number(c.time)/1000),value:Number(c.volume)||0,color:Number(c.close)>=Number(c.open)?'rgba(36,211,173,.45)':'rgba(243,95,115,.45)'}));
       if(!candles.length)return; state.tvCandle.setData(candles);state.tvVolume.setData(volume);
+      $('tvRsi').classList.toggle('visible',state.layers.rsi);
+      if(state.layers.rsi){const rsiValues=rsi(candles.map(c=>c.close)).map((value,i)=>value===null?null:{time:candles[i].time,value}).filter(Boolean);state.tvRsiLine.setData(rsiValues);state.tvRsiChart.priceScale('right').applyOptions({autoScale:true});}
+      const markers=[];candles.forEach((c,i)=>{const found=pattern(candles,i);if(state.layers.single&&found.single)markers.push({time:c.time,position:found.single==='Hammer'?'belowBar':'aboveBar',color:found.single==='Hammer'?'#3de3c2':'#ff6476',shape:found.single==='Hammer'?'arrowUp':'arrowDown',text:found.single});if(state.layers.double&&found.double)markers.push({time:c.time,position:found.double.includes('Bullish')?'belowBar':'aboveBar',color:found.double.includes('Bullish')?'#3de3c2':'#ff6476',shape:found.double.includes('Bullish')?'arrowUp':'arrowDown',text:found.double});});state.tvCandle.setMarkers(markers);
       state.tvLines.forEach(series=>chart.removeSeries(series));state.tvLines=[];const times=candles.map(c=>c.time),lastTime=times[times.length-1];
       const horizontal=(value,color,title)=>{const n=Number(value);if(!Number.isFinite(n)||n<=0)return;tvLine([{time:times[0],value:n},{time:lastTime,value:n}],color,title);};
       if(state.layers.levels){horizontal(data.support,colors.mint,'Support');horizontal(data.resistance,colors.red,'Resistance');}
