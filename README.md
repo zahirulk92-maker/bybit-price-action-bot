@@ -19,7 +19,7 @@ All thresholds are environment settings and should be changed only after reviewi
 
 Requires Python 3.10 or newer.
 
-For the safest first local test, double-click `start.bat`. It creates `.venv`, installs dependencies, opens the dashboard at `http://127.0.0.1:8000`, and runs the scanner in Bybit Demo signal-only mode. Press `Ctrl+C` in its terminal to stop it.
+Double-click `start.bat` to create `.venv`, install dependencies, open the dashboard at `http://127.0.0.1:8000`, and run the bot with Bybit Demo order placement enabled. It forces Demo mode and 5× leverage; it does not authorize live trading. Press `Ctrl+C` in its terminal to stop it.
 
 ```powershell
 python -m venv .venv
@@ -63,6 +63,29 @@ ENABLE_ORDER_PLACEMENT=true
 ```
 
 Then restart the bot. It sets 5× leverage before entry, places the exchange-side stop-loss immediately after confirming the fill, and manages TP1/TP2/TP3 as staged exits. Configure the account/contract for isolated margin and one-way position mode in Bybit Demo Trading before enabling orders.
+
+## Risk-engine rollout plan (3 + 3 + 2)
+
+The eight planned controls will not be enabled together. They are operational safety controls, not additional entry-confirmation rules. Each phase should first run in `MONITOR_ONLY` mode on Demo so its warnings and effect on trade frequency can be reviewed before enforcement.
+
+### Phase 1 — essential protection (3)
+
+1. Daily loss limit: proposed starting threshold `2%`, reset at midnight Asia/Dhaka.
+2. Consecutive-loss cooldown: proposed starting point is three losses followed by a 60-minute entry pause.
+3. Stop-loss verification: confirm the protective stop exists at Bybit after every fill; emergency-close an unprotected position.
+
+### Phase 2 — exchange-quality guards (3)
+
+4. Exchange reconciliation: compare local trades with actual Bybit positions/orders at startup and before entry to prevent duplicates.
+5. Slippage/spread guard: proposed starting maximum slippage is `0.15%`; tune it from Demo execution data rather than treating it as a permanent value.
+6. Liquidation-distance guard: reject a setup only when the planned stop does not have a safe buffer from liquidation at the configured leverage.
+
+### Phase 3 — emergency controls (2)
+
+7. Maximum drawdown lock: proposed starting threshold `5%`, requiring manual review before resuming entries.
+8. Emergency kill switch: cancel pending signals and pause new entries, with a separate explicit action for closing Demo positions.
+
+Roll out one phase at a time and measure signal count, executed trades, blocked trades, win rate and drawdown. If a control blocks normal setups too often, adjust that control from Demo evidence instead of weakening the price-action strategy.
 
 ## Tests
 
