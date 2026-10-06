@@ -46,6 +46,16 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(saved["checks"][0]["status"], "wait")
         self.assertGreater(saved["updated_at_ms"], 0)
 
+    def test_signal_journal_tracks_outcome(self):
+        signal_id = self.store.create_signal_journal(
+            "BTCUSDT", "ARMED", pattern="bullish_engulfing", side="Buy", trigger=101.0
+        )
+        self.store.update_signal_journal(signal_id, "BTCUSDT", "SIGNAL_ONLY", entry=101.2, reason="Trigger confirmed")
+        saved = self.store.recent_signal_journal()[0]
+        self.assertEqual(saved["status"], "SIGNAL_ONLY")
+        self.assertEqual(saved["pattern"], "bullish_engulfing")
+        self.assertEqual(saved["entry"], 101.2)
+
 
 if __name__ == "__main__":
     unittest.main()

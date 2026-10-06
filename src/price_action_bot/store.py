@@ -83,6 +83,13 @@ class Store:
                 symbol TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at_ms BIGINT NOT NULL
             )
             """,
+            f"""
+            CREATE TABLE IF NOT EXISTS signal_journal (
+                id {id_column}, symbol TEXT NOT NULL, status TEXT NOT NULL,
+                payload TEXT NOT NULL, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_signal_journal_updated ON signal_journal(updated_at_ms)",
         ]
         for statement in statements:
             self._execute(statement)
@@ -115,6 +122,56 @@ class Store:
             "INSERT INTO events(created_at_ms, symbol, event_type, payload) VALUES (?, ?, ?, ?)",
             (int(time.time() * 1000), symbol, event_type, json.dumps(payload, sort_keys=True)),
         )
+
+    def create_signal_journal(self, symbol: str, status: str, **payload: object) -> int:
+        now = int(time.time() * 1000)
+        encoded = json.dumps(payload, sort_keys=True)
+        if self._postgres:
+            row = self._execute(
+                "INSERT INTO signal_journal(symbol, status, payload, created_at_ms, updated_at_ms) "
+                "VALUES (?, ?, ?, ?, ?) RETURNING id",
+                (symbol, status, encoded, now, now),
+                fetch="one",
+            )
+            return int(self._dict(row)["id"])
+        self._execute(
+            "INSERT INTO signal_journal(symbol, status, payload, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
+            (symbol, status, encoded, now, now),
+        )
+        row = self._execute("SELECT last_insert_rowid() AS id", fetch="one")
+        return int(self._dict(row)["id"])
+
+    def update_signal_journal(
+        self, signal_id: int | None, symbol: str, status: str, **updates: object
+    ) -> None:
+        row = self._execute(
+            "SELECT id, payload FROM signal_journal WHERE id=?" if signal_id else
+            "SELECT id, payload FROM signal_journal WHERE symbol=? ORDER BY id DESC LIMIT 1",
+            (signal_id,) if signal_id else (symbol,),
+            fetch="one",
+        )
+        if not row:
+            return
+        current = json.loads(self._dict(row)["payload"])
+        current.update(updates)
+        self._execute(
+            "UPDATE signal_journal SET status=?, payload=?, updated_at_ms=? WHERE id=?",
+            (status, json.dumps(current, sort_keys=True), int(time.time() * 1000), self._dict(row)["id"]),
+        )
+
+    def recent_signal_journal(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._execute(
+            "SELECT id, symbol, status, payload, created_at_ms, updated_at_ms "
+            "FROM signal_journal ORDER BY id DESC LIMIT ?",
+            (limit,), fetch="all",
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._dict(row)
+            payload = json.loads(item.pop("payload"))
+            item.update(payload)
+            result.append(item)
+        return result
 
     def save_trade(self, trade: Trade, status: str = "open") -> None:
         payload = asdict(trade)

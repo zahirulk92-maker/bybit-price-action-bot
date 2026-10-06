@@ -46,6 +46,7 @@ class TradingEngine:
         self.last_universe_refresh_ms = 0
         self.last_processed_candle: dict[str, int] = {}
         self.armed: dict[str, ArmedSignal] = {}
+        self.journal_ids: dict[str, int] = {}
         self.trades = store.load_open_trades()
         self.notifier = notifier or TelegramNotifier()
         self._stop_event = threading.Event()
@@ -124,6 +125,9 @@ class TradingEngine:
         )
         if not entries_enabled:
             self.armed.pop(symbol, None)
+            self.store.update_signal_journal(
+                self.journal_ids.pop(symbol, None), symbol, "PAUSED", reason="Entries paused before trigger"
+            )
             decision["summary"] = "Entries are paused — analysis continues without arming setups"
             _set_check(decision, "trigger", "wait", "Resume entries to allow a setup to arm")
             self.store.decision_snapshot(symbol, decision)
@@ -158,6 +162,9 @@ class TradingEngine:
             decision["reward_risk"] = armed_rr
             if latest.timestamp_ms > armed.expires_at_ms:
                 self.store.event("SIGNAL_EXPIRED", symbol, pattern=armed.pattern.name)
+                self.store.update_signal_journal(
+                    self.journal_ids.pop(symbol, None), symbol, "EXPIRED", reason="Trigger window expired"
+                )
                 decision["summary"] = "Armed setup expired before the trigger break"
                 _set_check(decision, "trigger", "fail", "Trigger did not break within four 5m candles")
                 self.store.decision_snapshot(symbol, decision)
@@ -171,6 +178,9 @@ class TradingEngine:
             )
             if invalid:
                 self.store.event("SIGNAL_INVALIDATED", symbol, pattern=armed.pattern.name)
+                self.store.update_signal_journal(
+                    self.journal_ids.pop(symbol, None), symbol, "INVALIDATED", reason="Price closed beyond stop"
+                )
                 decision["summary"] = "Armed setup was invalidated by price"
                 _set_check(decision, "trigger", "fail", "Price closed beyond the pattern stop")
                 self.store.decision_snapshot(symbol, decision)
@@ -189,6 +199,10 @@ class TradingEngine:
                 _set_check(decision, "trigger", "pass", f"Price broke {armed.pattern.trigger:.8g}")
                 if live_rr < self.settings.min_reward_risk:
                     self.store.event("SIGNAL_SKIPPED_RR", symbol, entry=entry, target=armed.target)
+                    self.store.update_signal_journal(
+                        self.journal_ids.pop(symbol, None), symbol, "SKIPPED_RR",
+                        entry=entry, reward_risk=live_rr, reason="Live reward-to-risk fell below minimum",
+                    )
                     decision["summary"] = "Trigger broke, but live reward-to-risk became too small"
                     _set_check(
                         decision,
@@ -202,6 +216,12 @@ class TradingEngine:
                         else "Entry confirmed — order execution requested"
                     )
                     self._enter(symbol, armed, entry)
+                    self.store.update_signal_journal(
+                        self.journal_ids.pop(symbol, None), symbol,
+                        "ENTRY_CONFIRMED" if self.settings.enable_order_placement else "SIGNAL_ONLY",
+                        entry=entry, reward_risk=live_rr,
+                        reason="Trigger confirmed; signal-only mode" if not self.settings.enable_order_placement else "Order execution requested",
+                    )
                 self.store.decision_snapshot(symbol, decision)
                 self.armed.pop(symbol, None)
                 save_market("SCAN")
@@ -236,6 +256,12 @@ class TradingEngine:
                 stop=pattern.stop,
                 target=target,
             )
+            self.store.create_signal_journal(
+                symbol, "REJECTED_RR", pattern=pattern.name, side=pattern.side,
+                trigger=pattern.trigger, stop=pattern.stop, target=target,
+                volume_ratio=pattern.volume_ratio, reward_risk=reward_risk(pattern.trigger, pattern.stop, target, pattern.side),
+                reason="Pattern reward-to-risk below minimum",
+            )
             decision["summary"] = "Pattern rejected because reward-to-risk is below the minimum"
             self.store.decision_snapshot(symbol, decision)
             return
@@ -246,6 +272,13 @@ class TradingEngine:
             target=target,
         )
         self.armed[symbol] = armed
+        self.journal_ids[symbol] = self.store.create_signal_journal(
+            symbol, "ARMED", pattern=pattern.name, side=pattern.side,
+            trigger=pattern.trigger, stop=pattern.stop, target=target,
+            volume_ratio=pattern.volume_ratio,
+            reward_risk=reward_risk(pattern.trigger, pattern.stop, target, pattern.side),
+            reason="Setup armed; waiting for trigger",
+        )
         save_market("ARMED")
         decision["summary"] = f"Setup armed — waiting for {pattern.side.lower()} trigger break"
         _set_check(

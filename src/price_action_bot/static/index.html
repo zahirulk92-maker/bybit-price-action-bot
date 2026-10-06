@@ -97,6 +97,10 @@
     tr:last-child td { border-bottom:0; }
     .symbol { font-weight:800; }
     .empty { padding:28px 14px!important; text-align:center!important; color:var(--muted); }
+    .journal-filter { border:1px solid var(--line); border-radius:7px; padding:5px 8px; background:var(--panel2); color:var(--text); font-size:.68rem; }
+    .journal-table { min-width:940px; }
+    .journal-table td { font-size:.72rem; }
+    .journal-reason { color:var(--muted); white-space:normal; max-width:280px; }
     .lower-grid { display:grid; grid-template-columns:1.15fr .85fr; gap:14px; margin-top:14px; }
     .event-list { list-style:none; margin:0; padding:4px 14px 8px; max-height:310px; overflow:auto; }
     .event { position:relative; padding:11px 0 11px 18px; border-bottom:1px solid rgba(28,57,73,.7); }
@@ -174,6 +178,11 @@
           <div class="panel-head"><h2 class="panel-title">Positions & trade history</h2><span class="panel-note">newest first</span></div>
           <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Stop</th><th>Target</th><th>Quantity</th><th>Status</th></tr></thead><tbody id="tradeRows"><tr><td colspan="7" class="empty">No positions or completed trades yet.</td></tr></tbody></table></div>
         </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Signal journal</h2><div><select id="journalFilter" class="journal-filter" aria-label="Signal journal filter"><option value="all">All signals</option><option value="active">Active / armed</option><option value="closed">Closed outcomes</option></select></div></div>
+          <div class="table-wrap"><table class="journal-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Pattern</th><th>Trigger</th><th>Stop</th><th>Target</th><th>R:R</th><th>Volume</th><th>Status</th><th>Reason</th></tr></thead><tbody id="journalRows"><tr><td colspan="11" class="empty">No signal journal entries yet.</td></tr></tbody></table></div>
+        </section>
       </main>
 
       <aside class="panel watch-panel">
@@ -191,7 +200,7 @@
 
   <script>
     const $ = id => document.getElementById(id);
-    const state = { enabled:false, markets:[], decisions:[], selected:"", interval:"5", chart:null, request:0, layers:{levels:true,volume:true,rsi:false,single:true,double:true,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
+    const state = { enabled:false, markets:[], decisions:[], journal:[], selected:"", interval:"5", chart:null, request:0, layers:{levels:true,volume:true,rsi:false,single:true,double:true,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
     const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff" };
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
@@ -200,7 +209,7 @@
     const tone = bias => ["bullish","bearish"].includes(String(bias).toLowerCase())?String(bias).toLowerCase():"range";
 
     function renderStatus(data){
-      state.enabled=data.trading_enabled; state.markets=data.markets; state.decisions=data.decisions||[];
+      state.enabled=data.trading_enabled; state.markets=data.markets; state.decisions=data.decisions||[]; state.journal=data.signal_journal||[];
       const open=data.open_trades.filter(row=>row.status==="open"), armed=data.markets.filter(m=>m.signal_state==="ARMED");
       $('environment').textContent=data.environment.toUpperCase(); $('execution').textContent=data.execution==="orders"?"demo order execution":"signal-only mode";
       $('universeCount').textContent=data.markets.length; $('positionCount').textContent=open.length; $('positionMeta').textContent=`maximum ${data.strategy.max_positions}`;
@@ -219,6 +228,7 @@
       document.querySelectorAll('.watch-row').forEach(row=>row.addEventListener('click',()=>selectSymbol(row.dataset.symbol)));
       const market=data.markets.find(m=>m.symbol===state.selected); if(market) updateChartHeading(market);
       renderDecision();
+      renderJournal();
       $('tradeRows').innerHTML=data.open_trades.length?data.open_trades.map(row=>{const t=row.trade;return `<tr><td class="symbol">${esc(row.symbol)}</td><td class="${t.side==='Buy'?'bullish':'bearish'}">${esc(t.side)}</td><td>${fmt(t.entry)}</td><td>${fmt(t.stop)}</td><td>${fmt(t.target)}</td><td>${fmt(t.qty)}</td><td><span class="signal">${esc(row.status)}</span></td></tr>`;}).join(""):'<tr><td colspan="7" class="empty">No positions — waiting for a confirmed 5m trigger.</td></tr>';
       const s=data.strategy; $('settings').innerHTML=[["Leverage",`${s.leverage}×`],["Risk / trade",`${(s.risk_per_trade*100).toFixed(2)}%`],["Minimum R:R",`1:${s.min_reward_risk}`],["Volume gate",`${s.volume_multiplier}×`],["Max positions",s.max_positions],["Universe",s.universe_size]].map(([l,v])=>`<div class="setting"><span>${l}</span><strong>${v}</strong></div>`).join("");
       $('events').innerHTML=data.events.length?data.events.map(e=>{const d=Object.entries(e.payload).slice(0,3).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join(', '):v}`).join(' · ');return `<li class="event"><strong>${esc(e.event_type.replaceAll('_',' '))}${e.symbol?` · ${esc(e.symbol)}`:''}</strong><p>${esc(d||'No additional details')} · ${ago(e.created_at_ms)}</p></li>`;}).join(""):'<li class="empty">No events yet.</li>';
@@ -231,6 +241,10 @@
       $('decisionSummary').textContent=decision.summary; $('decisionUpdated').textContent=`updated ${ago(decision.updated_at_ms)}`;
       const icons={pass:'✓',wait:'…',fail:'×'};
       $('decisionList').innerHTML=(decision.checks||[]).map(check=>`<div class="decision-item"><span class="decision-icon ${esc(check.status)}">${icons[check.status]||'·'}</span><span class="decision-label">${esc(check.label)}</span><span class="decision-detail">${esc(check.detail)}</span></div>`).join('')||'<div class="empty">No checklist data yet.</div>';
+    }
+    function renderJournal(){
+      const filter=$('journalFilter').value; const active=new Set(['ARMED','PAUSED']); const rows=state.journal.filter(row=>filter==='all'||(filter==='active'?active.has(row.status):!active.has(row.status)));
+      $('journalRows').innerHTML=rows.length?rows.map(row=>{const stamp=row.created_at_ms?new Date(row.created_at_ms).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):'—';const statusClass=row.status==='ARMED'?'armed':row.status.includes('INVALID')||row.status.includes('REJECT')||row.status.includes('SKIP')||row.status==='EXPIRED'?'paused':'';return `<tr><td>${stamp}</td><td class="symbol">${esc(row.symbol)}</td><td class="${row.side==='Buy'?'bullish':'bearish'}">${esc(row.side||'—')}</td><td>${esc(String(row.pattern||'—').replaceAll('_',' '))}</td><td>${fmt(row.trigger)}</td><td>${fmt(row.stop)}</td><td>${fmt(row.target)}</td><td>${row.reward_risk?`1:${fmt(row.reward_risk,3)}`:'—'}</td><td>${row.volume_ratio?`${fmt(row.volume_ratio,3)}×`:'—'}</td><td><span class="signal ${statusClass}">${esc(row.status)}</span></td><td class="journal-reason">${esc(row.reason||'—')}</td></tr>`;}).join(''):'<tr><td colspan="11" class="empty">No matching signal journal entries.</td></tr>';
     }
     function selectSymbol(symbol){ if(symbol===state.selected)return; state.selected=symbol; document.querySelectorAll('.watch-row').forEach(r=>r.classList.toggle('active',r.dataset.symbol===symbol)); const m=state.markets.find(x=>x.symbol===symbol); if(m)updateChartHeading(m); renderDecision(); loadChart(); }
 
@@ -274,6 +288,7 @@
     document.querySelectorAll('[id^="layer"], .indicator-toggle').forEach(input=>input.addEventListener('change',()=>{if(input.classList.contains('indicator-toggle')){const kind=input.dataset.kind,period=Number(input.dataset.period);state.layers[kind]=input.checked?[...new Set([...state.layers[kind],period])]:state.layers[kind].filter(v=>v!==period);}else{const key=input.id.replace('layer','').toLowerCase();state.layers[key]=input.checked;}drawChart();}));
     document.querySelectorAll('[data-draw]').forEach(button=>button.addEventListener('click',()=>{state.drawMode=button.dataset.draw;document.querySelectorAll('[data-draw]').forEach(b=>b.classList.toggle('active',b===button));$('chartCanvas').style.cursor=state.drawMode==='cursor'?'crosshair':'cell';}));
     $('clearDrawings').addEventListener('click',()=>{state.drawings=[];state.draft=null;drawChart();});
+    $('journalFilter').addEventListener('change',renderJournal);
     document.querySelectorAll('.tf').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tf').forEach(b=>b.classList.remove('active'));button.classList.add('active');state.interval=button.dataset.interval;$('chartSubtitle').textContent=`${button.textContent} chart · 1h support/resistance`;loadChart();}));
     $('controlButton').addEventListener('click',async()=>{const button=$('controlButton');button.disabled=true;try{const response=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!state.enabled})});if(!response.ok)throw new Error(`Control update failed (${response.status})`);await refresh();}catch(error){showError(error.message);button.disabled=false;}});
     function showError(message){$('notice').textContent=message;$('notice').style.display='block';}
