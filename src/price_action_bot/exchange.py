@@ -145,6 +145,52 @@ class BybitGateway:
                 return position
         return None
 
+    def open_positions(self) -> list[dict[str, Any]]:
+        """Return every open USDT perpetual position from the exchange."""
+        positions: list[dict[str, Any]] = []
+        cursor = ""
+        while True:
+            params: dict[str, Any] = {
+                "category": "linear",
+                "settleCoin": "USDT",
+                "limit": 200,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            response = self._check(self.session.get_positions(**params))
+            result = response["result"]
+            positions.extend(
+                position
+                for position in result["list"]
+                if float(position.get("size") or 0) > 0
+            )
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor:
+                return positions
+
+    def closed_pnl(self, start_time_ms: int, limit: int = 100) -> list[dict[str, Any]]:
+        """Return Bybit's authoritative closed-PnL rows since ``start_time_ms``."""
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        remaining = max(1, limit)
+        while remaining > 0:
+            params: dict[str, Any] = {
+                "category": "linear",
+                "startTime": start_time_ms,
+                "limit": min(100, remaining),
+            }
+            if cursor:
+                params["cursor"] = cursor
+            response = self._check(self.session.get_closed_pnl(**params))
+            result = response["result"]
+            page = list(result.get("list") or [])
+            rows.extend(page)
+            remaining = limit - len(rows)
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor or not page:
+                break
+        return rows[:limit]
+
     def wait_for_position(self, symbol: str, attempts: int = 8) -> dict[str, Any]:
         for _ in range(attempts):
             position = self.position(symbol)

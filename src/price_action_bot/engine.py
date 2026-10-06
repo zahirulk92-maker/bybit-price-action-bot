@@ -20,6 +20,7 @@ from .universe import select_symbols
 LOGGER = logging.getLogger(__name__)
 FIVE_MINUTES_MS = 5 * 60 * 1000
 UNIVERSE_REFRESH_MS = 24 * 60 * 60 * 1000
+RECONCILE_INTERVAL_MS = 60 * 1000
 
 
 def _side_label(side: str) -> str:
@@ -74,6 +75,16 @@ class TradingEngine:
         self.notifier = notifier or TelegramNotifier()
         self._stop_event = threading.Event()
         self.last_daily_report_key = ""
+        self.last_reconcile_ms = 0
+        self.blocked_symbols: set[str] = set()
+        self.reconciliation: dict[str, object] = {
+            "status": "pending",
+            "last_checked_at_ms": 0,
+            "exchange_open": 0,
+            "tracked_open": len(self.trades),
+            "blocked_symbols": [],
+            "issues": [],
+        }
 
     def refresh_universe(self, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
@@ -102,10 +113,11 @@ class TradingEngine:
             if item.get("lastPrice")
         }
         self._manage_open_trades(prices)
+        self._reconcile_exchange_positions()
         self._maybe_send_daily_report()
         entries_enabled = self.store.trading_enabled()
         for symbol in self.symbols:
-            if symbol in self.trades:
+            if symbol in self.trades or symbol in self.blocked_symbols:
                 continue
             try:
                 self._process_symbol(symbol, prices.get(symbol, 0.0), entries_enabled)
@@ -136,6 +148,24 @@ class TradingEngine:
                 "TRAILING_STOP_CLOSED", "EARLY_EXIT_REVERSAL",
             )
         )
+        pnl_line = "💵 Realized P&L: unavailable"
+        if self.settings.enable_order_placement:
+            try:
+                pnl_rows = self.gateway.closed_pnl(int(start.timestamp() * 1000), limit=200)
+                realized = sum(float(row.get("closedPnl") or 0) for row in pnl_rows)
+                fees = sum(
+                    abs(float(row.get("openFee") or 0))
+                    + abs(float(row.get("closeFee") or 0))
+                    for row in pnl_rows
+                )
+                wins = sum(float(row.get("closedPnl") or 0) > 0 for row in pnl_rows)
+                losses = sum(float(row.get("closedPnl") or 0) < 0 for row in pnl_rows)
+                pnl_line = (
+                    f"💵 Bybit realized P&L: {realized:+.4f} USDT\n"
+                    f"🧾 Fees: {fees:.4f} USDT · Result: {wins}W / {losses}L"
+                )
+            except Exception:
+                LOGGER.exception("Daily real P&L fetch failed")
         report = (
             "📊 DAILY TRADING REPORT\n"
             "━━━━━━━━━━━━━━━━\n"
@@ -147,6 +177,7 @@ class TradingEngine:
             f"{counts.get('PARTIAL_TP2', 0)} / {counts.get('TP3_CLOSED', 0)}\n"
             f"⚠️ Reversal exits: {counts.get('EARLY_EXIT_REVERSAL', 0)}\n"
             f"🛡 SL / trailing exits: {counts.get('STOP_LOSS_CLOSED', 0)} / {counts.get('TRAILING_STOP_CLOSED', 0)}\n"
+            f"{pnl_line}\n"
             f"🛑 Risk/emergency events: {counts.get('EMERGENCY_CLOSE_UNPROTECTED', 0) + counts.get('TRADE_MANAGEMENT_ERROR', 0)}\n"
             f"📌 Open now: {len(self.trades)}\n"
             f"🟢 Bot: {'ACTIVE' if self.settings.enable_order_placement else 'SIGNAL ONLY / DEMO'}"
@@ -379,6 +410,13 @@ class TradingEngine:
         )
 
     def _enter(self, symbol: str, armed: ArmedSignal, expected_entry: float) -> None:
+        if self.settings.enable_order_placement:
+            # Re-check the exchange immediately before placing an order so a
+            # manually opened position cannot be duplicated between scans.
+            self._reconcile_exchange_positions(force=True)
+        if symbol in self.blocked_symbols:
+            self.store.event("ENTRY_BLOCKED_RECONCILIATION", symbol)
+            return
         if len(self.trades) >= self.settings.max_open_positions:
             self.store.event("ENTRY_BLOCKED_MAX_POSITIONS", symbol)
             return
@@ -634,6 +672,132 @@ class TradingEngine:
                 LOGGER.exception("Trade management failed for %s", symbol)
                 self.store.event("TRADE_MANAGEMENT_ERROR", symbol)
 
+    def _reconcile_exchange_positions(self, force: bool = False) -> None:
+        """Align local state with Bybit without adopting unknown positions."""
+        if not self.settings.enable_order_placement:
+            self.reconciliation = {
+                "status": "disabled",
+                "last_checked_at_ms": 0,
+                "exchange_open": 0,
+                "tracked_open": len(self.trades),
+                "blocked_symbols": [],
+                "issues": [],
+            }
+            return
+        now_ms = int(time.time() * 1000)
+        if not force and now_ms - self.last_reconcile_ms < RECONCILE_INTERVAL_MS:
+            return
+        exchange_rows = self.gateway.open_positions()
+        exchange_positions = {
+            str(row.get("symbol") or ""): row
+            for row in exchange_rows
+            if row.get("symbol")
+        }
+        previous_blocked = set(self.blocked_symbols)
+        issues: list[dict[str, object]] = []
+
+        for symbol, trade in list(self.trades.items()):
+            position = exchange_positions.get(symbol)
+            if not position:
+                self.store.close_trade(symbol)
+                self.trades.pop(symbol, None)
+                self.store.event(
+                    "RECONCILED_LOCAL_CLOSED",
+                    symbol,
+                    side=trade.side,
+                    reason="Local trade was not open on Bybit during reconciliation",
+                )
+                self.notifier.send(
+                    "🔄 POSITION RECONCILED · DEMO\n"
+                    "━━━━━━━━━━━━━━━━\n"
+                    f"📌 Pair: {symbol}\n"
+                    "ℹ️ Bybit reports no open position; local position was closed\n"
+                    "📊 Final result is available in Real P&L"
+                )
+
+        healthy_matches: set[str] = set()
+        for symbol, position in exchange_positions.items():
+            trade = self.trades.get(symbol)
+            if not trade:
+                issues.append({"symbol": symbol, "type": "untracked_exchange_position"})
+                if symbol not in previous_blocked:
+                    self.store.event(
+                        "UNTRACKED_EXCHANGE_POSITION",
+                        symbol,
+                        side=position.get("side"),
+                        qty=position.get("size"),
+                    )
+                    self.notifier.send(
+                        "🚨 RECONCILIATION ALERT · DEMO\n"
+                        "━━━━━━━━━━━━━━━━\n"
+                        f"📌 Pair: {symbol}\n"
+                        f"📊 Bybit position: {position.get('side')} · qty {position.get('size')}\n"
+                        "⛔ No matching local trade; new bot entry is blocked\n"
+                        "👤 Review this position manually"
+                    )
+                continue
+
+            exchange_side = str(position.get("side") or "")
+            if exchange_side != trade.side:
+                issues.append({"symbol": symbol, "type": "side_mismatch"})
+                if symbol not in previous_blocked:
+                    self.store.event(
+                        "POSITION_SIDE_MISMATCH",
+                        symbol,
+                        local_side=trade.side,
+                        exchange_side=exchange_side,
+                    )
+                    self.notifier.send(
+                        "🚨 POSITION SIDE MISMATCH · DEMO\n"
+                        "━━━━━━━━━━━━━━━━\n"
+                        f"📌 Pair: {symbol}\n"
+                        f"💾 Local: {trade.side} · Bybit: {exchange_side}\n"
+                        "⛔ Automated entry is blocked; manual review required"
+                    )
+                continue
+
+            healthy_matches.add(symbol)
+            changed = False
+            exchange_qty = float(position.get("size") or 0)
+            if not trade.partial_taken and abs(exchange_qty - trade.qty) > max(1e-12, exchange_qty * 1e-6):
+                old_qty = trade.qty
+                trade.qty = exchange_qty
+                changed = True
+                self.store.event(
+                    "POSITION_QTY_RECONCILED",
+                    symbol,
+                    local_qty=old_qty,
+                    exchange_qty=exchange_qty,
+                )
+            exchange_stop = float(position.get("stopLoss") or 0)
+            if exchange_stop > 0 and abs(exchange_stop - trade.stop) > max(1e-12, exchange_stop * 1e-8):
+                old_stop = trade.stop
+                trade.stop = exchange_stop
+                changed = True
+                self.store.event(
+                    "POSITION_STOP_RECONCILED",
+                    symbol,
+                    local_stop=old_stop,
+                    exchange_stop=exchange_stop,
+                )
+            if changed:
+                self.store.save_trade(trade)
+
+        current_blocked = {str(issue["symbol"]) for issue in issues}
+        for symbol in previous_blocked - current_blocked:
+            self.store.event("RECONCILIATION_CLEARED", symbol)
+        self.blocked_symbols = current_blocked
+        self.symbols = list(dict.fromkeys(self.symbols + list(exchange_positions)))
+        self.last_reconcile_ms = now_ms
+        self.reconciliation = {
+            "status": "attention" if issues else "healthy",
+            "last_checked_at_ms": now_ms,
+            "exchange_open": len(exchange_positions),
+            "tracked_open": len(healthy_matches),
+            "blocked_symbols": sorted(self.blocked_symbols),
+            "issues": issues,
+        }
+
     def run_forever(self) -> None:
         def request_stop(signum: int, _frame: object) -> None:
             LOGGER.warning("Received signal %s; stopping after current cycle", signum)
@@ -643,6 +807,7 @@ class TradingEngine:
             signal.signal(signal.SIGTERM, request_stop)
             signal.signal(signal.SIGINT, request_stop)
         self.refresh_universe(force=True)
+        self._reconcile_exchange_positions(force=True)
         mode = "DEMO ORDERS" if self.settings.enable_order_placement else "SIGNAL ONLY"
         LOGGER.warning("Bot started in %s mode", mode)
         self.notifier.send(
@@ -662,6 +827,7 @@ class TradingEngine:
             scanner_status="starting",
             last_scan_at_ms=0,
             next_scan_at_ms=started_at_ms,
+            reconciliation=self.reconciliation,
         )
         while not self._stop_event.is_set():
             started = time.monotonic()
@@ -683,6 +849,7 @@ class TradingEngine:
                     last_scan_at_ms=finished_at_ms,
                     last_scan_duration_ms=elapsed_ms,
                     next_scan_at_ms=next_scan_at_ms,
+                    reconciliation=self.reconciliation,
                 )
             except Exception:
                 LOGGER.exception("Engine cycle failed")
@@ -695,6 +862,7 @@ class TradingEngine:
                     scanner_status="error",
                     last_scan_at_ms=failed_at_ms,
                     next_scan_at_ms=failed_at_ms + self.settings.poll_seconds * 1000,
+                    reconciliation=self.reconciliation,
                 )
             elapsed = time.monotonic() - started
             self._stop_event.wait(max(1.0, self.settings.poll_seconds - elapsed))

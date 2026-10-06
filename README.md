@@ -64,6 +64,10 @@ ENABLE_ORDER_PLACEMENT=true
 
 Then restart the bot. It sets 5× leverage before entry, places the exchange-side stop-loss immediately after confirming the fill, and manages TP1/TP2/TP3 as staged exits. Configure the account/contract for isolated margin and one-way position mode in Bybit Demo Trading before enabling orders.
 
+The worker now reconciles local open trades against all Bybit USDT perpetual positions at startup, every minute, and immediately before every entry. Quantity and exchange stop changes are synchronized for tracked positions. An exchange position with no matching local trade, or a side mismatch, is never adopted automatically: that symbol is entry-blocked and a dashboard/Telegram warning is raised for manual review.
+
+The dashboard's **Real P&L · Bybit** section comes from Bybit's closed-PnL endpoint, not estimated candle prices or local event labels. It shows today's Asia/Dhaka net realized P&L, fees, wins/losses, win rate, and recent exchange-confirmed exits. Unrealized P&L remains separately visible in the wallet card.
+
 ## Risk-engine rollout plan (3 + 3 + 2)
 
 The eight planned controls will not be enabled together. They are operational safety controls, not additional entry-confirmation rules. Each phase should first run in `MONITOR_ONLY` mode on Demo so its warnings and effect on trade frequency can be reviewed before enforcement.
@@ -76,7 +80,7 @@ The eight planned controls will not be enabled together. They are operational sa
 
 ### Phase 2 — exchange-quality guards (3)
 
-4. Exchange reconciliation: compare local trades with actual Bybit positions/orders at startup and before entry to prevent duplicates.
+4. Exchange reconciliation: implemented for positions at startup, every minute, and before entry; unknown or side-mismatched positions block that symbol instead of being adopted automatically. Order-history reconciliation remains a later extension.
 5. Slippage/spread guard: proposed starting maximum slippage is `0.15%`; tune it from Demo execution data rather than treating it as a permanent value.
 6. Liquidation-distance guard: reject a setup only when the planned stop does not have a safe buffer from liquidation at the configured leverage.
 

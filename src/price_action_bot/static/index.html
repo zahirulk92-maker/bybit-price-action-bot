@@ -144,11 +144,13 @@
       <div class="stat"><span class="label">Opened today</span><strong id="todayOpened" class="stat-value">—</strong><span id="todayOpenedMeta" class="sub">positions created</span></div>
       <div class="stat"><span class="label">Closed today</span><strong id="todayClosed" class="stat-value">—</strong><span id="todayClosedMeta" class="sub">completed positions</span></div>
       <div class="stat"><span class="label">TP / SL today</span><strong id="todayOutcome" class="stat-value">—</strong><span id="todayOutcomeMeta" class="sub">full exits</span></div>
+      <div class="stat"><span class="label">Realized P&amp;L today</span><strong id="realizedPnl" class="stat-value">—</strong><span id="realizedPnlMeta" class="sub">Bybit closed P&amp;L</span></div>
       <div class="stat"><span class="label">Universe</span><strong id="universeCount" class="stat-value">—</strong><span class="sub">dynamic USDT perpetuals</span></div>
       <div class="stat"><span class="label">Open positions</span><strong id="positionCount" class="stat-value">—</strong><span id="positionMeta" class="sub">maximum 3</span></div>
       <div class="stat"><span class="label">Trailing stop</span><strong id="trailingState" class="stat-value">—</strong><span id="trailingMeta" class="sub">checking open trades</span></div>
       <div class="stat"><span class="label">Armed signals</span><strong id="armedCount" class="stat-value">—</strong><span id="armedMeta" class="sub">awaiting price trigger</span></div>
       <div class="stat"><span class="label">Scanner heartbeat</span><strong id="scannerState" class="stat-value">—</strong><span id="scannerMeta" class="sub">waiting for first scan</span></div>
+      <div class="stat"><span class="label">Exchange sync</span><strong id="reconcileState" class="stat-value">—</strong><span id="reconcileMeta" class="sub">waiting for reconciliation</span></div>
     </section>
 
     <section class="workspace">
@@ -198,6 +200,11 @@
         </section>
 
         <section class="panel">
+          <div class="panel-head"><h2 class="panel-title">Real P&amp;L · Bybit</h2><span id="pnlSource" class="panel-note">exchange-confirmed exits</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Quantity</th><th>Avg entry</th><th>Avg exit</th><th>Fees</th><th>Net realized P&amp;L</th></tr></thead><tbody id="pnlRows"><tr><td colspan="8" class="empty">Loading Bybit closed P&amp;L…</td></tr></tbody></table></div>
+        </section>
+
+        <section class="panel">
           <div class="panel-head"><h2 class="panel-title">Signal journal</h2><div><select id="journalFilter" class="journal-filter" aria-label="Signal journal filter"><option value="all">All signals</option><option value="active">Active / armed</option><option value="closed">Closed outcomes</option></select></div></div>
           <div class="table-wrap"><table class="journal-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Pattern</th><th>Trigger</th><th>Stop</th><th>Target</th><th>R:R</th><th>Volume</th><th>Status</th><th>Reason</th></tr></thead><tbody id="journalRows"><tr><td colspan="11" class="empty">No signal journal entries yet.</td></tr></tbody></table></div>
         </section>
@@ -233,17 +240,19 @@
       state.openTrades=open;
       if(state.chart) drawChart();
       $('environment').textContent=data.environment.toUpperCase(); $('execution').textContent=data.execution==="orders"?"demo order execution":"signal-only mode";
-      const wallet=data.wallet||{},today=data.today||{};
+      const wallet=data.wallet||{},today=data.today||{},pnl=data.pnl||{},reconciliation=data.reconciliation||{};
       $('walletEquity').textContent=wallet.available?`${fmt(wallet.equity)} USDT`:'Unavailable'; $('walletMeta').textContent=wallet.available?`available ${fmt(wallet.available_balance)} · UPL ${fmt(wallet.unrealized_pnl)}`:(wallet.error||'Check Demo API credentials');
       $('todayOpened').textContent=today.opened??0; $('todayOpenedMeta').textContent=`TP1 ${today.tp1_hits||0} · TP2 ${today.tp2_hits||0}`;
       $('todayClosed').textContent=today.closed??0; $('todayClosedMeta').textContent=`remaining ${today.remaining??open.length} · reversal ${today.reversal_closed||0}`;
       $('todayOutcome').textContent=`${today.tp_closed||0} / ${today.sl_closed||0}`; $('todayOutcomeMeta').textContent=`TP / SL · trailing ${today.trailing_closed||0} · reversal ${today.reversal_closed||0} · other ${today.other_closed||0}`;
+      $('realizedPnl').textContent=pnl.available?`${Number(pnl.realized_pnl||0)>=0?'+':''}${fmt(pnl.realized_pnl)} USDT`:'Unavailable'; $('realizedPnl').className=`stat-value ${pnl.available?(Number(pnl.realized_pnl||0)>=0?'bullish':'bearish'):'range'}`; $('realizedPnlMeta').textContent=pnl.available?`${pnl.wins||0}W / ${pnl.losses||0}L · ${Number(pnl.win_rate||0).toFixed(1)}% · fees ${fmt(pnl.fees)}`:(pnl.error||'Check Demo API credentials');
       $('trailingState').textContent=(today.trailing_active||0)>0?'ACTIVE':'OFF'; $('trailingState').className=`stat-value ${(today.trailing_active||0)>0?'bullish':'range'}`; $('trailingMeta').textContent=(today.trailing_active||0)>0?`${today.trailing_active} position protected`:'no active trailing stop';
       $('universeCount').textContent=data.markets.length; $('positionCount').textContent=open.length; $('positionMeta').textContent=`today remaining ${today.remaining??open.length} · maximum ${data.strategy.max_positions}`;
       $('armedCount').textContent=armed.length; $('armedMeta').textContent=armed.length?armed.map(m=>m.symbol).join(", "):"awaiting price trigger";
       const scanner=data.scanner||{}; const scannerTone=scanner.status==='healthy'?'bullish':scanner.status==='error'||scanner.status==='stale'?'bearish':'range';
       $('scannerState').textContent=String(scanner.status||'starting').toUpperCase(); $('scannerState').className=`stat-value ${scannerTone}`;
       $('scannerMeta').textContent=scanner.last_scan_at_ms?`last ${ago(scanner.last_scan_at_ms)} · ${until(scanner.next_scan_at_ms)}`:'waiting for first scan';
+      const syncTone=reconciliation.status==='healthy'?'bullish':reconciliation.status==='attention'?'bearish':'range'; $('reconcileState').textContent=String(reconciliation.status||'pending').toUpperCase(); $('reconcileState').className=`stat-value ${syncTone}`; const blocked=reconciliation.blocked_symbols||[]; $('reconcileMeta').textContent=reconciliation.last_checked_at_ms?`${reconciliation.tracked_open||0}/${reconciliation.exchange_open||0} tracked · ${blocked.length?`blocked ${blocked.join(', ')}`:ago(reconciliation.last_checked_at_ms)}`:'waiting for first exchange check';
       $('workerDot').className=`dot ${data.worker_online?'online':'offline'}`; $('workerText').textContent=data.worker_online?(state.enabled?"Worker online":"Entries paused"):"Worker offline";
       $('lastUpdate').textContent=data.heartbeat.updated_at_ms?ago(data.heartbeat.updated_at_ms):"Waiting";
       const button=$('controlButton'); button.disabled=false; button.textContent=state.enabled?"Pause bot":"Resume bot"; button.className=`control ${state.enabled?'pause':''}`;
@@ -257,6 +266,7 @@
       renderDecision();
       renderJournal();
       $('tradeRows').innerHTML=data.open_trades.length?data.open_trades.map(row=>{const t=row.trade,stateName=String(t.state||'POSITION_OPEN'),isOpen=row.status==='open',management=!isOpen?(stateName==='TRAILING'?'Closed after trailing':t.tp2_taken?'Closed after TP2':t.partial_taken?'Closed after TP1':'Closed'):stateName==='TRAILING'?`Trailing active · ${fmt(t.stop)}`:t.tp2_taken?'TP2 secured · runner':t.partial_taken?'TP1 secured · breakeven':'Initial SL protected';return `<tr><td class="symbol">${esc(row.symbol)}</td><td class="${t.side==='Buy'?'bullish':'bearish'}">${esc(t.side)}</td><td>${fmt(t.entry)}</td><td>${fmt(t.stop)}</td><td>${fmt(t.target)}</td><td>${fmt(t.qty)}</td><td class="${isOpen&&stateName==='TRAILING'?'bullish':''}">${esc(management)}</td><td><span class="signal ${isOpen&&stateName==='TRAILING'?'armed':''}">${esc(row.status)}</span></td></tr>`;}).join(""):'<tr><td colspan="8" class="empty">No positions — waiting for a confirmed 5m trigger.</td></tr>';
+      const pnlRows=pnl.rows||[]; $('pnlSource').textContent=pnl.available?`${pnl.closed_count||0} exchange-confirmed exits today · net includes Bybit trading fees`:(pnl.error||'exchange data unavailable'); $('pnlRows').innerHTML=pnlRows.length?pnlRows.map(row=>{const stamp=row.updated_at_ms?new Date(row.updated_at_ms).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):'—',value=Number(row.closed_pnl||0);return `<tr><td>${stamp}</td><td class="symbol">${esc(row.symbol)}</td><td class="${row.side==='Buy'?'bullish':'bearish'}">${esc(row.side)}</td><td>${fmt(row.qty)}</td><td>${fmt(row.entry)}</td><td>${fmt(row.exit)}</td><td>${fmt(row.fees)}</td><td class="${value>=0?'bullish':'bearish'}"><strong>${value>=0?'+':''}${fmt(value)} USDT</strong></td></tr>`;}).join(''):`<tr><td colspan="8" class="empty">${esc(pnl.available?'No Bybit exits today.':(pnl.error||'Real P&L unavailable.'))}</td></tr>`;
       const s=data.strategy; $('settings').innerHTML=[["Leverage",`${s.leverage}×`],["Risk / trade",`${(s.risk_per_trade*100).toFixed(2)}%`],["Minimum R:R",`1:${s.min_reward_risk}`],["Volume gate",`${s.volume_multiplier}×`],["Max positions",s.max_positions],["Universe",s.universe_size]].map(([l,v])=>`<div class="setting"><span>${l}</span><strong>${v}</strong></div>`).join("");
       const safety=data.safety||{}; const safetyItems=[["Environment",safety.environment,safety.environment==='DEMO LOCKED'?'ok':'warn'],["Execution",safety.execution,safety.execution==='SIGNAL ONLY'?'ok':'warn'],["Entry gate",safety.entries,safety.entries==='ENABLED'?'ok':'warn'],["Risk guard",safety.risk_guard,'ok'],["Max total risk",`${(Number(safety.max_total_risk||0)*100).toFixed(2)}%`,'ok'],["Live lock",safety.live_lock?'acknowledged':'not active',safety.live_lock?'warn':'ok']]; $('safetyControls').innerHTML=safetyItems.map(([label,value,kind])=>`<div class="safety-item ${kind}"><span>${label}</span><strong>${esc(value)}</strong></div>`).join("");
       $('events').innerHTML=data.events.length?data.events.map(e=>{const d=Object.entries(e.payload).slice(0,3).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join(', '):v}`).join(' · ');return `<li class="event"><strong>${esc(e.event_type.replaceAll('_',' '))}${e.symbol?` · ${esc(e.symbol)}`:''}</strong><p>${esc(d||'No additional details')} · ${ago(e.created_at_ms)}</p></li>`;}).join(""):'<li class="empty">No events yet.</li>';

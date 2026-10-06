@@ -32,6 +32,8 @@ chart_cache_lock = threading.Lock()
 chart_cache: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
 wallet_cache_lock = threading.Lock()
 wallet_cache: tuple[float, dict[str, object]] | None = None
+pnl_cache_lock = threading.Lock()
+pnl_cache: tuple[float, dict[str, object]] | None = None
 
 
 def _wallet_status() -> dict[str, object]:
@@ -49,6 +51,65 @@ def _wallet_status() -> dict[str, object]:
         payload = {"available": False, "error": "Bybit wallet temporarily unavailable"}
     with wallet_cache_lock:
         wallet_cache = (now + 15, payload)
+    return payload
+
+
+def _number(value: object) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _real_pnl_status() -> dict[str, object]:
+    """Summarize today's authoritative Bybit closed-PnL rows."""
+    global pnl_cache
+    if not settings.api_key or not settings.api_secret:
+        return {"available": False, "error": "Demo API credentials are not configured", "rows": []}
+    now = time.monotonic()
+    with pnl_cache_lock:
+        if pnl_cache and pnl_cache[0] > now:
+            return pnl_cache[1]
+    dhaka = timezone(timedelta(hours=6))
+    local_now = datetime.now(dhaka)
+    start = datetime.combine(local_now.date(), datetime.min.time(), tzinfo=dhaka)
+    try:
+        raw_rows = chart_gateway.closed_pnl(int(start.timestamp() * 1000), limit=200)
+        rows = [
+            {
+                "symbol": str(row.get("symbol") or ""),
+                "side": str(row.get("side") or ""),
+                "qty": _number(row.get("qty")),
+                "entry": _number(row.get("avgEntryPrice")),
+                "exit": _number(row.get("avgExitPrice")),
+                "closed_pnl": _number(row.get("closedPnl")),
+                "fees": abs(_number(row.get("openFee"))) + abs(_number(row.get("closeFee"))),
+                "updated_at_ms": int(_number(row.get("updatedTime") or row.get("createdTime"))),
+                "order_id": str(row.get("orderId") or ""),
+            }
+            for row in raw_rows
+        ]
+        rows.sort(key=lambda row: int(row["updated_at_ms"]), reverse=True)
+        wins = sum(_number(row["closed_pnl"]) > 0 for row in rows)
+        losses = sum(_number(row["closed_pnl"]) < 0 for row in rows)
+        decided = wins + losses
+        payload: dict[str, object] = {
+            "available": True,
+            "source": "Bybit closed P&L",
+            "realized_pnl": sum(_number(row["closed_pnl"]) for row in rows),
+            "fees": sum(_number(row["fees"]) for row in rows),
+            "closed_count": len(rows),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": (wins / decided * 100) if decided else 0.0,
+            "since_ms": int(start.timestamp() * 1000),
+            "rows": rows[:30],
+        }
+    except Exception as exc:
+        LOGGER.warning("Real P&L unavailable: %s", exc)
+        payload = {"available": False, "error": "Bybit closed P&L temporarily unavailable", "rows": []}
+    with pnl_cache_lock:
+        pnl_cache = (now + 15, payload)
     return payload
 
 
@@ -203,7 +264,19 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "heartbeat": heartbeat,
         "scanner": scanner,
         "wallet": _wallet_status(),
+        "pnl": _real_pnl_status(),
         "today": _today_summary(trades),
+        "reconciliation": heartbeat_details.get(
+            "reconciliation",
+            {
+                "status": "pending",
+                "last_checked_at_ms": 0,
+                "exchange_open": 0,
+                "tracked_open": 0,
+                "blocked_symbols": [],
+                "issues": [],
+            },
+        ),
         "safety": safety,
         "trading_enabled": store.trading_enabled(),
         "markets": store.market_snapshots(),

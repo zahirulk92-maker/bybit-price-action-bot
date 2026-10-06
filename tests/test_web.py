@@ -1,5 +1,6 @@
 import unittest
 import time
+from dataclasses import replace
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -11,6 +12,7 @@ from price_action_bot.models import Candle
 class ChartApiTests(unittest.TestCase):
     def setUp(self):
         web.chart_cache.clear()
+        web.pnl_cache = None
         self.market = {
             "symbol": "BTCUSDT",
             "price": 100.0,
@@ -93,6 +95,32 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual(result["tp_closed"], 1)
         self.assertEqual(result["sl_closed"], 1)
         self.assertEqual(result["trailing_active"], 1)
+
+    def test_real_pnl_uses_bybit_closed_rows(self):
+        rows = [
+            {
+                "symbol": "BTCUSDT", "side": "Sell", "qty": "0.01",
+                "avgEntryPrice": "100", "avgExitPrice": "90", "closedPnl": "0.095",
+                "openFee": "-0.002", "closeFee": "-0.003", "updatedTime": "1000",
+            },
+            {
+                "symbol": "ETHUSDT", "side": "Buy", "qty": "0.2",
+                "avgEntryPrice": "20", "avgExitPrice": "19", "closedPnl": "-0.21",
+                "openFee": "-0.004", "closeFee": "-0.006", "updatedTime": "2000",
+            },
+        ]
+        configured = replace(web.settings, api_key="demo-key", api_secret="demo-secret")
+        with patch.object(web, "settings", configured), patch.object(
+            web.chart_gateway, "closed_pnl", return_value=rows
+        ):
+            result = web._real_pnl_status()
+        self.assertTrue(result["available"])
+        self.assertAlmostEqual(result["realized_pnl"], -0.115)
+        self.assertAlmostEqual(result["fees"], 0.015)
+        self.assertEqual(result["wins"], 1)
+        self.assertEqual(result["losses"], 1)
+        self.assertEqual(result["win_rate"], 50.0)
+        self.assertEqual(result["rows"][0]["symbol"], "ETHUSDT")
 
 
 if __name__ == "__main__":
