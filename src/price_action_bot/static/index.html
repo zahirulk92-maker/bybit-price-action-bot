@@ -214,7 +214,7 @@
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { enabled:false, markets:[], decisions:[], journal:[], openTrades:[], selected:"", interval:"5", chart:null, chartKey:"", request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, tvChart:null, tvCandle:null, tvVolume:null, tvLines:[], tvRsiChart:null, tvRsiLine:null, tvPrimed:false, tvBarSpacing:8, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
+    const state = { enabled:false, markets:[], decisions:[], journal:[], openTrades:[], selected:"", interval:"5", chart:null, chartKey:"", request:0, view:null, crosshair:null, pan:null, socket:null, socketKey:"", socketTimer:null, lastLiveTick:0, tvChart:null, tvCandle:null, tvVolume:null, tvLines:[], tvRsiChart:null, tvRsiLine:null, tvPrimed:false, tvBarSpacing:8, layers:{levels:true,volume:true,rsi:false,single:false,double:false,ma:[],ema:[]}, drawMode:"cursor", drawings:[], draft:null };
     const colors = { bg:"#0b1b27", grid:"#173442", text:"#82a6ba", mint:"#3de3c2", red:"#ff6476", blue:"#68b7ff", amber:"#ffc85a" };
     const esc = value => String(value ?? "").replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     const fmt = (value,digits=6) => { const n=Number(value); if(!Number.isFinite(n))return "—"; return n>=1000?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toLocaleString(undefined,{maximumSignificantDigits:digits}); };
@@ -275,7 +275,7 @@
       let socket;
       try{ socket=new WebSocket('wss://stream.bybit.com/v5/public/linear'); state.socket=socket; state.socketKey=topic; }
       catch(error){ setStreamState('polling fallback'); return; }
-      socket.onopen=()=>{setStreamState('LIVE',true);socket.send(JSON.stringify({op:'subscribe',args:[topic]}));};
+      socket.onopen=()=>{state.lastLiveTick=Date.now();setStreamState('LIVE · 0s',true);socket.send(JSON.stringify({op:'subscribe',args:[topic]}));};
       socket.onmessage=event=>{
         try{
           const message=JSON.parse(event.data); if(message.topic!==topic||!Array.isArray(message.data)||!message.data.length||!state.chart)return;
@@ -283,7 +283,7 @@
           if(!candle.time||[candle.open,candle.high,candle.low,candle.close,candle.volume].some(v=>!Number.isFinite(v)))return;
           const candles=state.chart.candles||[], last=candles[candles.length-1];
           if(last&&Number(last.time)===candle.time)candles[candles.length-1]=candle; else if(!last||candle.time>Number(last.time)){candles.push(candle);if(candles.length>180)candles.splice(0,candles.length-180);}
-          state.chart.candles=candles; $('chartPrice').textContent=fmt(candle.close); drawChart();
+          state.lastLiveTick=Date.now();state.chart.candles=candles; $('chartPrice').textContent=fmt(candle.close); drawChart();
         }catch(error){/* ignore malformed heartbeat frames */}
       };
       socket.onerror=()=>{setStreamState('polling fallback');};
@@ -295,7 +295,7 @@
       catch(error){ if(request!==state.request)return; setStreamState('polling fallback'); $('chartLoading').textContent=error.message; }
     }
 
-    function candleMeta(c){ if(!c){$('chartMeta').textContent='No candle data';return;} $('chartMeta').innerHTML=`<span>O ${fmt(c.open)}</span><span>H ${fmt(c.high)}</span><span>L ${fmt(c.low)}</span><span>C ${fmt(c.close)}</span><span class="${c.close>=c.open?'bullish':'bearish'}">VOL ${fmt(c.volume,5)}</span>`; }
+    function candleMeta(c){ if(!c){$('chartMeta').textContent='No candle data';return;} const stamp=c.time?new Date(Number(c.time)).toLocaleString(undefined,{month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'; $('chartMeta').innerHTML=`<span>BYBIT</span><span>${stamp}</span><span>O ${fmt(c.open)}</span><span>H ${fmt(c.high)}</span><span>L ${fmt(c.low)}</span><span>C ${fmt(c.close)}</span><span class="${c.close>=c.open?'bullish':'bearish'}">VOL ${fmt(c.volume,5)}</span>`; }
     const sma=(values,p)=>values.map((_,i)=>i+1<p?null:values.slice(i-p+1,i+1).reduce((a,b)=>a+b,0)/p);
     function ema(values,p){const out=[];let prev=null,k=2/(p+1);values.forEach((v,i)=>{prev=prev===null?v:v*k+prev*(1-k);out.push(i+1<p?null:prev);});return out;}
     function rsi(values,p=14){const out=values.map(()=>null);let gain=0,loss=0;for(let i=1;i<values.length;i++){const d=values[i]-values[i-1];if(i<=p){gain+=Math.max(d,0);loss+=Math.max(-d,0);if(i===p)out[i]=loss?100-(100/(1+gain/loss)):100;}else{gain=(gain*(p-1)+Math.max(d,0))/p;loss=(loss*(p-1)+Math.max(-d,0))/p;out[i]=loss?100-(100/(1+gain/loss)):100;}}return out;}
@@ -338,6 +338,8 @@
       new ResizeObserver(entries=>{const box=entries[0]?.contentRect;if(box)state.tvChart.resize(Math.max(300,box.width),Math.max(260,box.height));}).observe($('tvChart'));
       state.tvRsiChart=LightweightCharts.createChart($('tvRsi'),{layout:{background:{type:'solid',color:'#071923'},textColor:'#82a6ba'},grid:{vertLines:{color:'#102d3a'},horzLines:{color:'#102d3a'}},rightPriceScale:{borderColor:'#244554',scaleMargins:{top:.12,bottom:.12}},timeScale:{visible:false},crosshair:{mode:LightweightCharts.CrosshairMode.Normal},handleScroll:false,handleScale:false});
       state.tvRsiLine=state.tvRsiChart.addLineSeries({color:'#c48cff',lineWidth:1,priceLineVisible:false,lastValueVisible:true,title:'RSI 14'});
+      state.tvRsiLine.createPriceLine({price:70,color:'rgba(255,100,118,.55)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'70'});state.tvRsiLine.createPriceLine({price:30,color:'rgba(61,227,194,.55)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'30'});
+      state.tvChart.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(range&&state.tvRsiChart)state.tvRsiChart.timeScale().setVisibleLogicalRange(range);});
       new ResizeObserver(entries=>{const box=entries[0]?.contentRect;if(box)state.tvRsiChart.resize(Math.max(300,box.width),Math.max(80,box.height));}).observe($('tvRsi'));
       return state.tvChart;
     }
@@ -346,7 +348,7 @@
       const data=state.chart,chart=ensureTvChart(); if(!chart||!data?.candles?.length)return;
       const candles=data.candles.map(c=>({time:Math.floor(Number(c.time)/1000),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)})).filter(c=>c.time&&[c.open,c.high,c.low,c.close].every(Number.isFinite));
       const volume=data.candles.map(c=>({time:Math.floor(Number(c.time)/1000),value:Number(c.volume)||0,color:Number(c.close)>=Number(c.open)?'rgba(36,211,173,.45)':'rgba(243,95,115,.45)'}));
-      if(!candles.length)return; state.tvCandle.setData(candles);state.tvVolume.setData(volume);
+      if(!candles.length)return; state.tvCandle.setData(candles);state.tvVolume.setData(state.layers.volume?volume:[]);
       $('tvRsi').classList.toggle('visible',state.layers.rsi);
       if(state.layers.rsi){const rsiValues=rsi(candles.map(c=>c.close)).map((value,i)=>value===null?null:{time:candles[i].time,value}).filter(Boolean);state.tvRsiLine.setData(rsiValues);state.tvRsiChart.priceScale('right').applyOptions({autoScale:true});}
       const markers=[];candles.forEach((c,i)=>{const found=pattern(candles,i);if(state.layers.single&&found.single)markers.push({time:c.time,position:found.single==='Hammer'?'belowBar':'aboveBar',color:found.single==='Hammer'?'#3de3c2':'#ff6476',shape:found.single==='Hammer'?'arrowUp':'arrowDown',text:found.single});if(state.layers.double&&found.double)markers.push({time:c.time,position:found.double.includes('Bullish')?'belowBar':'aboveBar',color:found.double.includes('Bullish')?'#3de3c2':'#ff6476',shape:found.double.includes('Bullish')?'arrowUp':'arrowDown',text:found.double});});state.tvCandle.setMarkers(markers);
@@ -379,7 +381,7 @@
     function showError(message){$('notice').textContent=message;$('notice').style.display='block';}
     async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error(`Dashboard request failed (${response.status})`);const before=state.selected;renderStatus(await response.json());$('notice').style.display='none';if(!state.chart||before!==state.selected)loadChart();}catch(error){showError(error.message);$('workerDot').className='dot offline';$('workerText').textContent='Disconnected';}}
     new ResizeObserver(()=>{if(state.chart)drawChart();}).observe($('chartCanvas'));
-    refresh();setInterval(refresh,10000);setInterval(()=>{if(state.selected)loadChart();},15000);
+    refresh();setInterval(refresh,10000);setInterval(()=>{if(state.selected)loadChart();},15000);setInterval(()=>{if(!state.socket||state.socket.readyState!==WebSocket.OPEN||!state.lastLiveTick)return;const seconds=Math.max(0,Math.floor((Date.now()-state.lastLiveTick)/1000));setStreamState(`${seconds>12?'STALE':'LIVE'} · ${seconds}s`,seconds<=12);},1000);
   </script>
 </body>
 </html>
