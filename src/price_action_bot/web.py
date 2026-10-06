@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -34,6 +34,8 @@ wallet_cache_lock = threading.Lock()
 wallet_cache: tuple[float, dict[str, object]] | None = None
 pnl_cache_lock = threading.Lock()
 pnl_cache: tuple[float, dict[str, object]] | None = None
+audit_cache_lock = threading.Lock()
+audit_pnl_cache: dict[int, tuple[float, dict[str, object]]] = {}
 
 
 def _wallet_status() -> dict[str, object]:
@@ -61,20 +63,10 @@ def _number(value: object) -> float:
         return 0.0
 
 
-def _real_pnl_status() -> dict[str, object]:
-    """Summarize today's authoritative Bybit closed-PnL rows."""
-    global pnl_cache
-    if not settings.api_key or not settings.api_secret:
-        return {"available": False, "error": "Demo API credentials are not configured", "rows": []}
-    now = time.monotonic()
-    with pnl_cache_lock:
-        if pnl_cache and pnl_cache[0] > now:
-            return pnl_cache[1]
-    dhaka = timezone(timedelta(hours=6))
-    local_now = datetime.now(dhaka)
-    start = datetime.combine(local_now.date(), datetime.min.time(), tzinfo=dhaka)
+def _pnl_status_since(start_ms: int, limit: int = 500) -> dict[str, object]:
+    """Summarize authoritative Bybit closed-PnL rows since a timestamp."""
     try:
-        raw_rows = chart_gateway.closed_pnl(int(start.timestamp() * 1000), limit=200)
+        raw_rows = chart_gateway.closed_pnl(start_ms, limit=limit)
         rows = [
             {
                 "symbol": str(row.get("symbol") or ""),
@@ -102,12 +94,29 @@ def _real_pnl_status() -> dict[str, object]:
             "wins": wins,
             "losses": losses,
             "win_rate": (wins / decided * 100) if decided else 0.0,
-            "since_ms": int(start.timestamp() * 1000),
-            "rows": rows[:30],
+            "since_ms": start_ms,
+            "rows": rows,
         }
     except Exception as exc:
         LOGGER.warning("Real P&L unavailable: %s", exc)
         payload = {"available": False, "error": "Bybit closed P&L temporarily unavailable", "rows": []}
+    return payload
+
+
+def _real_pnl_status() -> dict[str, object]:
+    """Summarize today's authoritative Bybit closed-PnL rows."""
+    global pnl_cache
+    if not settings.api_key or not settings.api_secret:
+        return {"available": False, "error": "Demo API credentials are not configured", "rows": []}
+    now = time.monotonic()
+    with pnl_cache_lock:
+        if pnl_cache and pnl_cache[0] > now:
+            return pnl_cache[1]
+    dhaka = timezone(timedelta(hours=6))
+    local_now = datetime.now(dhaka)
+    start = datetime.combine(local_now.date(), datetime.min.time(), tzinfo=dhaka)
+    payload = _pnl_status_since(int(start.timestamp() * 1000), limit=200)
+    payload["rows"] = list(payload.get("rows") or [])[:30]
     with pnl_cache_lock:
         pnl_cache = (now + 15, payload)
     return payload
@@ -224,6 +233,77 @@ def health() -> dict[str, str]:
 @app.get("/", response_class=FileResponse)
 def dashboard(_: str = Depends(require_auth)) -> FileResponse:
     return FileResponse(static_dir / "index.html")
+
+
+@app.get("/audit", response_class=FileResponse)
+def audit_dashboard(_: str = Depends(require_auth)) -> FileResponse:
+    return FileResponse(static_dir / "audit.html")
+
+
+@app.get("/api/audit")
+def api_audit(
+    days: int = Query(7, ge=1, le=7),
+    symbol: str = Query("", max_length=30),
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    now_ms = int(time.time() * 1000)
+    since_ms = now_ms - days * 24 * 60 * 60 * 1000
+    wanted = symbol.strip().upper()
+    now = time.monotonic()
+    with audit_cache_lock:
+        cached = audit_pnl_cache.get(days)
+        if cached and cached[0] > now:
+            pnl = cached[1]
+        elif not settings.api_key or not settings.api_secret:
+            pnl = {"available": False, "error": "Demo API credentials are not configured", "rows": []}
+        else:
+            pnl = _pnl_status_since(since_ms)
+            audit_pnl_cache[days] = (now + 30, pnl)
+    events = store.events_since(since_ms, limit=2000)
+    signals = [
+        row for row in store.recent_signal_journal(1000)
+        if int(row.get("updated_at_ms") or 0) >= since_ms
+    ]
+    trades = [
+        row for row in store.recent_trades(1000)
+        if int(row.get("updated_at_ms") or 0) >= since_ms
+    ]
+    pnl_rows = list(pnl.get("rows") or [])
+    if wanted:
+        events = [row for row in events if row.get("symbol") == wanted]
+        signals = [row for row in signals if row.get("symbol") == wanted]
+        trades = [row for row in trades if row.get("symbol") == wanted]
+        pnl_rows = [row for row in pnl_rows if row.get("symbol") == wanted]
+    realized = sum(_number(row.get("closed_pnl")) for row in pnl_rows)
+    fees = sum(_number(row.get("fees")) for row in pnl_rows)
+    wins = sum(_number(row.get("closed_pnl")) > 0 for row in pnl_rows)
+    losses = sum(_number(row.get("closed_pnl")) < 0 for row in pnl_rows)
+    heartbeat = store.get_heartbeat()
+    reconciliation = (heartbeat.get("details") or {}).get("reconciliation", {})
+    return {
+        "generated_at_ms": now_ms,
+        "since_ms": since_ms,
+        "days": days,
+        "symbol": wanted,
+        "summary": {
+            "realized_pnl": realized,
+            "fees": fees,
+            "exchange_exits": len(pnl_rows),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": wins / (wins + losses) * 100 if wins + losses else 0.0,
+            "local_trades": len(trades),
+            "events": len(events),
+            "signals": len(signals),
+        },
+        "pnl_available": bool(pnl.get("available")),
+        "pnl_error": pnl.get("error", ""),
+        "reconciliation": reconciliation,
+        "exchange_exits": pnl_rows[:500],
+        "trades": trades,
+        "events": list(reversed(events)),
+        "signals": signals,
+    }
 
 
 @app.get("/api/status")

@@ -72,6 +72,28 @@ class ReconciliationTests(unittest.TestCase):
 
         self.assertEqual(trade.qty, 1.0)
 
+    def test_closed_pnl_notification_is_exchange_confirmed_and_deduplicated(self):
+        self.gateway.closed_pnl.return_value = [{
+            "symbol": "BTCUSDT", "side": "Sell", "qty": "0.1",
+            "avgEntryPrice": "100", "avgExitPrice": "110", "closedPnl": "0.95",
+            "openFee": "-0.02", "closeFee": "-0.03", "updatedTime": "1000",
+            "orderId": "exit-1",
+        }]
+
+        self.engine._notify_new_closed_pnl()
+        self.engine.last_pnl_poll_ms = 0
+        self.engine._notify_new_closed_pnl()
+
+        self.assertEqual(self.notifier.send.call_count, 1)
+        message = self.notifier.send.call_args.args[0]
+        self.assertIn("BYBIT EXIT CONFIRMED", message)
+        self.assertIn("+0.950000 USDT", message)
+        matching_events = [
+            call for call in self.store.event.call_args_list
+            if call.args and call.args[0] == "EXCHANGE_PNL_CONFIRMED"
+        ]
+        self.assertEqual(len(matching_events), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

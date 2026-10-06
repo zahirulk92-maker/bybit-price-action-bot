@@ -13,6 +13,7 @@ class ChartApiTests(unittest.TestCase):
     def setUp(self):
         web.chart_cache.clear()
         web.pnl_cache = None
+        web.audit_pnl_cache.clear()
         self.market = {
             "symbol": "BTCUSDT",
             "price": 100.0,
@@ -37,6 +38,10 @@ class ChartApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             web.api_chart("BTCUSDT", "1", 160, "test")
         self.assertEqual(raised.exception.status_code, 400)
+
+    def test_audit_page_is_available(self):
+        response = web.audit_dashboard("test")
+        self.assertTrue(str(response.path).endswith("audit.html"))
 
     def test_status_exposes_scanner_heartbeat(self):
         now = int(time.time() * 1000)
@@ -121,6 +126,31 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual(result["losses"], 1)
         self.assertEqual(result["win_rate"], 50.0)
         self.assertEqual(result["rows"][0]["symbol"], "ETHUSDT")
+
+    def test_audit_combines_exchange_and_local_sources(self):
+        configured = replace(web.settings, api_key="demo-key", api_secret="demo-secret")
+        closed = [{
+            "symbol": "BTCUSDT", "side": "Buy", "qty": "0.1",
+            "avgEntryPrice": "100", "avgExitPrice": "110", "closedPnl": "0.9",
+            "openFee": "-0.04", "closeFee": "-0.06", "updatedTime": str(int(time.time() * 1000)),
+            "orderId": "close-1",
+        }]
+        local_trade = {
+            "id": 1, "symbol": "BTCUSDT", "status": "closed",
+            "updated_at_ms": int(time.time() * 1000), "trade": {"side": "Buy"},
+        }
+        with patch.object(web, "settings", configured), patch.object(
+            web.chart_gateway, "closed_pnl", return_value=closed
+        ), patch.object(web.store, "events_since", return_value=[]), patch.object(
+            web.store, "recent_signal_journal", return_value=[]
+        ), patch.object(web.store, "recent_trades", return_value=[local_trade]), patch.object(
+            web.store, "get_heartbeat", return_value={"details": {"reconciliation": {"status": "healthy"}}}
+        ):
+            result = web.api_audit(3, "BTCUSDT", "test")
+        self.assertEqual(result["summary"]["realized_pnl"], 0.9)
+        self.assertEqual(result["summary"]["exchange_exits"], 1)
+        self.assertEqual(result["summary"]["local_trades"], 1)
+        self.assertEqual(result["reconciliation"]["status"], "healthy")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from .analysis import detect_pattern, detect_trade_reversal, market_context, rew
 from .config import Settings
 from .exchange import BybitGateway
 from .models import ArmedSignal, SignalState, Trade
-from .notify import TelegramNotifier
+from .notify import TelegramNotifier, format_alert
 from .risk import one_r_price, position_size
 from .store import Store
 from .universe import select_symbols
@@ -76,6 +76,8 @@ class TradingEngine:
         self._stop_event = threading.Event()
         self.last_daily_report_key = ""
         self.last_reconcile_ms = 0
+        self.last_pnl_poll_ms = 0
+        self.notified_closed_pnl_ids: set[str] = set()
         self.blocked_symbols: set[str] = set()
         self.reconciliation: dict[str, object] = {
             "status": "pending",
@@ -114,6 +116,7 @@ class TradingEngine:
         }
         self._manage_open_trades(prices)
         self._reconcile_exchange_positions()
+        self._notify_new_closed_pnl()
         self._maybe_send_daily_report()
         entries_enabled = self.store.trading_enabled()
         for symbol in self.symbols:
@@ -267,6 +270,13 @@ class TradingEngine:
                 self.store.decision_snapshot(symbol, decision)
                 self.armed.pop(symbol, None)
                 save_market("SCAN")
+                self.notifier.send(format_alert(
+                    "⌛ SIGNAL EXPIRED",
+                    symbol=symbol,
+                    status="NO ENTRY",
+                    facts=[("🕯 Pattern", armed.pattern.name.replace("_", " "))],
+                    action="Trigger window ended; setup removed",
+                ))
                 return
             invalid = (
                 armed.pattern.side == "Buy" and latest.close <= armed.pattern.stop
@@ -283,6 +293,16 @@ class TradingEngine:
                 self.store.decision_snapshot(symbol, decision)
                 self.armed.pop(symbol, None)
                 save_market("SCAN")
+                self.notifier.send(format_alert(
+                    "❌ SIGNAL INVALIDATED",
+                    symbol=symbol,
+                    status="NO ENTRY",
+                    facts=[
+                        ("🕯 Pattern", armed.pattern.name.replace("_", " ")),
+                        ("🛡 Invalid beyond", f"{armed.pattern.stop:.8g}"),
+                    ],
+                    action="Setup removed; waiting for a new 5m confirmation",
+                ))
                 return
             is_later_candle = latest.timestamp_ms > armed.pattern.timestamp_ms
             triggered = (
@@ -416,13 +436,33 @@ class TradingEngine:
             self._reconcile_exchange_positions(force=True)
         if symbol in self.blocked_symbols:
             self.store.event("ENTRY_BLOCKED_RECONCILIATION", symbol)
+            self.notifier.send(format_alert(
+                "⛔ ENTRY BLOCKED",
+                symbol=symbol,
+                status="EXCHANGE RECONCILIATION",
+                action="Resolve the Bybit/local position mismatch before retrying",
+            ))
             return
         if len(self.trades) >= self.settings.max_open_positions:
             self.store.event("ENTRY_BLOCKED_MAX_POSITIONS", symbol)
+            self.notifier.send(format_alert(
+                "⛔ ENTRY BLOCKED",
+                symbol=symbol,
+                status="MAX POSITIONS REACHED",
+                facts=[("📦 Open", f"{len(self.trades)} / {self.settings.max_open_positions}")],
+                action="Existing trades remain managed",
+            ))
             return
         projected_risk = (len(self.trades) + 1) * self.settings.risk_per_trade
         if projected_risk > self.settings.max_total_open_risk + 1e-12:
             self.store.event("ENTRY_BLOCKED_TOTAL_RISK", symbol)
+            self.notifier.send(format_alert(
+                "⛔ ENTRY BLOCKED",
+                symbol=symbol,
+                status="TOTAL RISK LIMIT",
+                facts=[("⚖️ Projected risk", f"{projected_risk * 100:.2f}%")],
+                action="No order was sent",
+            ))
             return
         if not self.settings.enable_order_placement:
             self.store.event(
@@ -443,7 +483,7 @@ class TradingEngine:
                 f"💵 Entry estimate: {expected_entry:.8g}\n"
                 f"🛡 Stop loss: {armed.pattern.stop:.8g}\n"
                 f"🏁 Target zone: {armed.target:.8g}\n"
-                "✅ Entry gate passed; demo order placement is enabled"
+                "ℹ️ Entry gate passed; no exchange order was sent"
             )
             return
 
@@ -497,17 +537,19 @@ class TradingEngine:
         self.store.event("POSITION_OPENED", symbol, **{k: str(v) for k, v in trade.__dict__.items()})
         LOGGER.warning("Opened %s %s qty=%s entry=%s", trade.side, symbol, trade.qty, trade.entry)
         self.notifier.send(
-            "✅ POSITION OPENED · DEMO\n"
+            "✅ POSITION OPENED · DEMO · V3\n"
             "━━━━━━━━━━━━━━━━\n"
             f"📌 Pair: {symbol}\n"
             f"📊 Direction: {_side_label(trade.side)}\n"
             f"💵 Entry: {trade.entry:.8g}\n"
             f"📦 Quantity: {trade.qty:.8g}\n"
+            f"⚙️ Leverage: {self.settings.leverage}× · risk {self.settings.risk_per_trade * 100:.2f}%\n"
             f"🛡 SL: {trade.stop:.8g}\n"
             f"🎯 TP1: {trade.one_r_target:.8g} · 50%\n"
             f"🎯 TP2: {trade.tp2_target:.8g} · 30%\n"
             f"🎯 TP3: {trade.target:.8g} · 20% runner\n"
-            "🔁 Reversal protection: ACTIVE"
+            f"🧾 Entry order: {trade.order_id}\n"
+            "🔁 Reversal protection: ACTIVE · Trade Audit: recorded"
         )
 
     def _manage_open_trades(self, prices: dict[str, float]) -> None:
@@ -539,7 +581,8 @@ class TradingEngine:
                         f"📊 Position: {_side_label(trade.side)}\n"
                         f"💵 Entry: {trade.entry:.8g}\n"
                         f"🛡 Final stop: {trade.stop:.8g}\n"
-                        "✅ Position is no longer open"
+                        "✅ Position is no longer open\n"
+                        "📊 Bybit-confirmed result will follow once available"
                     )
                     continue
                 price = prices.get(symbol) or float(position["markPrice"])
@@ -574,7 +617,8 @@ class TradingEngine:
                         f"🕯 Opposite pattern: {reversal['pattern'].replace('_', ' ')}\n"
                         f"📈 Volume: {float(reversal['volume_ratio']):.2f}× average\n"
                         f"📝 Reason: {reversal['reason']}\n"
-                        "🛑 Remaining position closed for protection"
+                        "🛑 Remaining position closed for protection\n"
+                        "📊 Bybit-confirmed result will follow once available"
                     )
                     continue
                 reached_one_r = (
@@ -599,6 +643,7 @@ class TradingEngine:
                     self.notifier.send(
                         "💰 TP1 HIT · 50% CLOSED\n"
                         f"📌 Pair: {symbol}\n"
+                        f"📦 Closed quantity: {trade.qty * 0.50:.8g}\n"
                         f"💵 Fill: {price:.8g}\n"
                         f"🛡 New stop: {new_stop:.8g}\n"
                         "🔒 Risk reduced; runner remains active"
@@ -618,6 +663,7 @@ class TradingEngine:
                     self.notifier.send(
                         "💰 TP2 HIT · 30% CLOSED\n"
                         f"📌 Pair: {symbol}\n"
+                        f"📦 Closed quantity: {trade.qty * 0.30:.8g}\n"
                         f"💵 Fill: {price:.8g}\n"
                         "📌 20% runner remains for TP3"
                     )
@@ -637,8 +683,10 @@ class TradingEngine:
                     self.notifier.send(
                         "🏁 TP3 HIT · TRADE COMPLETE\n"
                         f"📌 Pair: {symbol}\n"
+                        f"📦 Closed quantity: {remaining_qty:.8g}\n"
                         f"💵 Final fill: {price:.8g}\n"
-                        "✅ 100% planned position exited"
+                        "✅ 100% planned position exited\n"
+                        "📊 Bybit-confirmed result will follow once available"
                     )
                     continue
 
@@ -668,6 +716,17 @@ class TradingEngine:
                             trade.state = SignalState.TRAILING
                             self.store.save_trade(trade)
                             self.store.event("TRAILING_STOP_MOVED", symbol, stop=candidate)
+                            self.notifier.send(format_alert(
+                                "🔒 TRAILING STOP UPDATED",
+                                symbol=symbol,
+                                status="POSITION PROTECTED",
+                                facts=[
+                                    ("📊 Direction", _side_label(trade.side)),
+                                    ("🛡 New stop", f"{candidate:.8g}"),
+                                    ("💵 Market", f"{price:.8g}"),
+                                ],
+                                action="Remaining runner stays open",
+                            ))
             except Exception:
                 LOGGER.exception("Trade management failed for %s", symbol)
                 self.store.event("TRADE_MANAGEMENT_ERROR", symbol)
@@ -798,6 +857,65 @@ class TradingEngine:
             "issues": issues,
         }
 
+    def _notify_new_closed_pnl(self, initialize: bool = False) -> None:
+        """Send one exchange-confirmed result per new Bybit closed-PnL row."""
+        if not self.settings.enable_order_placement:
+            return
+        now_ms = int(time.time() * 1000)
+        if not initialize and now_ms - self.last_pnl_poll_ms < 15_000:
+            return
+        dhaka = timezone(timedelta(hours=6))
+        local_now = datetime.now(dhaka)
+        start = datetime.combine(local_now.date(), datetime.min.time(), tzinfo=dhaka)
+        try:
+            rows = self.gateway.closed_pnl(int(start.timestamp() * 1000), limit=200)
+        except Exception:
+            LOGGER.exception("Exchange P&L notification poll failed")
+            self.store.event("EXCHANGE_PNL_POLL_ERROR")
+            return
+        self.last_pnl_poll_ms = now_ms
+        identities = {
+            str(row.get("orderId") or f"{row.get('symbol')}:{row.get('updatedTime')}:{row.get('closedPnl')}")
+            for row in rows
+        }
+        if initialize:
+            self.notified_closed_pnl_ids.update(identities)
+            return
+        for row in sorted(rows, key=lambda item: int(item.get("updatedTime") or 0)):
+            identity = str(
+                row.get("orderId")
+                or f"{row.get('symbol')}:{row.get('updatedTime')}:{row.get('closedPnl')}"
+            )
+            if identity in self.notified_closed_pnl_ids:
+                continue
+            pnl = float(row.get("closedPnl") or 0)
+            fees = abs(float(row.get("openFee") or 0)) + abs(float(row.get("closeFee") or 0))
+            self.notified_closed_pnl_ids.add(identity)
+            self.store.event(
+                "EXCHANGE_PNL_CONFIRMED",
+                str(row.get("symbol") or ""),
+                order_id=identity,
+                closed_pnl=pnl,
+                fees=fees,
+                avg_entry=row.get("avgEntryPrice"),
+                avg_exit=row.get("avgExitPrice"),
+                qty=row.get("qty"),
+            )
+            self.notifier.send(format_alert(
+                "✅ BYBIT EXIT CONFIRMED" if pnl >= 0 else "📉 BYBIT EXIT CONFIRMED",
+                symbol=str(row.get("symbol") or ""),
+                status="PROFIT" if pnl > 0 else "LOSS" if pnl < 0 else "BREAKEVEN",
+                facts=[
+                    ("📊 Closed side", row.get("side") or "—"),
+                    ("📦 Quantity", row.get("qty") or "—"),
+                    ("💵 Avg entry", row.get("avgEntryPrice") or "—"),
+                    ("🏁 Avg exit", row.get("avgExitPrice") or "—"),
+                    ("💰 Net P&L", f"{pnl:+.6f} USDT"),
+                    ("🧾 Trading fees", f"{fees:.6f} USDT"),
+                ],
+                action="Recorded in Trade Audit",
+            ))
+
     def run_forever(self) -> None:
         def request_stop(signum: int, _frame: object) -> None:
             LOGGER.warning("Received signal %s; stopping after current cycle", signum)
@@ -808,15 +926,16 @@ class TradingEngine:
             signal.signal(signal.SIGINT, request_stop)
         self.refresh_universe(force=True)
         self._reconcile_exchange_positions(force=True)
+        self._notify_new_closed_pnl(initialize=True)
         mode = "DEMO ORDERS" if self.settings.enable_order_placement else "SIGNAL ONLY"
         LOGGER.warning("Bot started in %s mode", mode)
         self.notifier.send(
-            "🚀 PRICE ACTION BOT STARTED · ALERTS V2\n"
+            "🚀 PRICE ACTION BOT STARTED · ALERTS V3\n"
             "━━━━━━━━━━━━━━━━\n"
             f"🧪 Mode: {mode}\n"
             f"⚙️ Leverage: {self.settings.leverage}×\n"
             f"📌 Universe: {len(self.symbols)} symbols\n"
-            "✅ Structured Telegram alerts are active"
+            "✅ Lifecycle + exchange-confirmed P&L alerts are active"
         )
         started_at_ms = int(time.time() * 1000)
         self.store.heartbeat(

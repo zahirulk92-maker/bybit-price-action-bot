@@ -68,6 +68,10 @@ The worker now reconciles local open trades against all Bybit USDT perpetual pos
 
 The dashboard's **Real P&L · Bybit** section comes from Bybit's closed-PnL endpoint, not estimated candle prices or local event labels. It shows today's Asia/Dhaka net realized P&L, fees, wins/losses, win rate, and recent exchange-confirmed exits. Unrealized P&L remains separately visible in the wallet card.
 
+Open `/audit` from the dashboard's **Trade audit** button for a filterable 1/3/7-day record. The page deliberately labels Bybit closed-PnL rows as exchange truth and local strategy trades/events as local audit data. Telegram Alerts V3 also sends each newly observed Bybit closed-PnL row once, with actual net P&L and reported trading fees, while setup expiry, invalidation, risk blocks, and trailing-stop moves receive separate lifecycle alerts.
+
+Chart support and resistance are confirmed 1h swing levels, not moving averages, so they do not follow every price tick. They update after a new closed 1h swing is confirmed. If live price crosses one first, the chart marks it as a broken support/resistance flip-watch level instead of silently moving the line.
+
 ## Risk-engine rollout plan (3 + 3 + 2)
 
 The eight planned controls will not be enabled together. They are operational safety controls, not additional entry-confirmation rules. Each phase should first run in `MONITOR_ONLY` mode on Demo so its warnings and effect on trade frequency can be reviewed before enforcement.

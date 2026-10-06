@@ -9,6 +9,27 @@ import urllib.request
 LOGGER = logging.getLogger(__name__)
 
 
+def format_alert(
+    title: str,
+    *,
+    symbol: str = "",
+    status: str = "",
+    facts: list[tuple[str, object]] | None = None,
+    action: str = "",
+) -> str:
+    """Build one consistent, phone-friendly Telegram alert."""
+    lines = [title, "━━━━━━━━━━━━━━━━"]
+    if symbol:
+        lines.append(f"📌 Pair: {symbol}")
+    if status:
+        lines.append(f"🔎 Status: {status}")
+    for label, value in facts or []:
+        lines.append(f"{label}: {value}")
+    if action:
+        lines.extend(("───────────────", f"➡️ {action}"))
+    return "\n".join(lines)
+
+
 class TelegramNotifier:
     def __init__(self, token: str = "", chat_id: str = "") -> None:
         self.token = token
