@@ -21,11 +21,14 @@ from .store import Store
 
 settings = Settings.from_env()
 store = Store(settings.database_path, settings.database_url)
+chart_gateway = BybitGateway(settings.api_key, settings.api_secret, settings.demo)
 security = HTTPBasic(auto_error=False)
 static_dir = Path(__file__).with_name("static")
 LOGGER = logging.getLogger(__name__)
 engine_host_stop = threading.Event()
 engine_ref: dict[str, TradingEngine] = {}
+chart_cache_lock = threading.Lock()
+chart_cache: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
 
 
 def _run_embedded_engine() -> None:
@@ -132,6 +135,51 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
             "universe_size": settings.universe_size,
         },
     }
+
+
+@app.get("/api/chart/{symbol}")
+def api_chart(
+    symbol: str,
+    interval: str = "5",
+    limit: int = 160,
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    symbol = symbol.upper()
+    if interval not in {"5", "15", "60"}:
+        raise HTTPException(status_code=400, detail="Supported intervals: 5, 15, 60")
+    markets = {row["symbol"]: row for row in store.market_snapshots()}
+    if symbol not in markets:
+        raise HTTPException(status_code=404, detail="Symbol is not in the active universe")
+    limit = max(60, min(limit, 240))
+    key = (symbol, interval)
+    now = time.monotonic()
+    with chart_cache_lock:
+        cached = chart_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    candles = chart_gateway.candles(symbol, interval, limit)
+    market = markets[symbol]
+    payload: dict[str, object] = {
+        "symbol": symbol,
+        "interval": interval,
+        "bias": market["bias"],
+        "support": market["support"],
+        "resistance": market["resistance"],
+        "candles": [
+            {
+                "time": candle.timestamp_ms,
+                "open": candle.open,
+                "high": candle.high,
+                "low": candle.low,
+                "close": candle.close,
+                "volume": candle.volume,
+            }
+            for candle in candles
+        ],
+    }
+    with chart_cache_lock:
+        chart_cache[key] = (now + 15, payload)
+    return payload
 
 
 @app.post("/api/control")

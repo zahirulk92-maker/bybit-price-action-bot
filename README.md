@@ -2,7 +2,7 @@
 
 Single-worker Bybit USDT perpetual bot. It runs in **signal-only mode by default** and uses Bybit Demo Trading when order placement is enabled.
 
-The repository also includes an authenticated web dashboard for worker health, dynamic market states, open positions, history, strategy settings, and pausing/resuming new entries.
+The repository also includes an authenticated web dashboard with real Bybit candlestick/volume charts, 1h support/resistance overlays, a selectable 10-symbol watchlist, worker health, positions, history, strategy settings, and pausing/resuming new entries.
 
 ## Strategy implemented
 
