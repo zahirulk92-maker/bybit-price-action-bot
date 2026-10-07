@@ -39,4 +39,27 @@ Restart with `start.bat`, open **System → V2 Scanner Funnel**, and collect sev
 - armed/open symbols remain visible in tracking during eligibility changes;
 - V1 watchlist, signals, and orders remain unaffected.
 
-Until that review is approved, Phase 2 remains implemented but not locked, and Phase 3 must not start.
+## Locked review record — 2026-10-08
+
+Phase 2 was approved and locked after two consecutive Bybit Demo shadow snapshots:
+
+| Evidence | Snapshot 1 | Snapshot 2 |
+|---|---:|---:|
+| Eligible symbols | 289 | 289 |
+| Candidate pool | 30 | 30 |
+| Deep-analysis pool | 6 | 8 |
+| Action queue | 5 | 5 |
+| Candidate churn | 0% | 0% |
+| Funnel latency | 1,585 ms | 1,174 ms |
+| API calls | 2 | 2 |
+
+The candidate pool remained stable while the deep-analysis pool and action queue changed with market location. Both latency samples were below the 2,000 ms limit. Database, public API, and authenticated private API diagnostics were healthy, and no new engine-cycle error appeared after the Phase 2 snapshots.
+
+Protected armed/open tracking passed deterministic and worker-integration tests. No live protected position existed during this review sample, so that specific runtime case remains an observation item rather than an exit blocker.
+
+Locked outcome:
+
+- V1 universe, signals, risk, and orders remain unchanged.
+- Phase 2 remains `shadow` with `v2_execution_authority=false`.
+- Phase 2 parameters may not change without a new reviewed policy version.
+- Phase 3 may begin only after explicit user approval.

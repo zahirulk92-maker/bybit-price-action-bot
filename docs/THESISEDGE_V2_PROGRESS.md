@@ -8,7 +8,7 @@ This file records implementation status only. The locked design remains in [`THE
 |---|---|---|
 | Phase 0 — Baseline and instrumentation | Complete | Exit gate passed locally on 2026-10-07; 39/39 tests and deterministic replay checks passed |
 | Phase 1 — Market Structure Map | Complete | Exit gate passed on 2026-10-08 after BTC, ETH, and ZEC 1h chart review and overlay-noise cleanup; shadow only |
-| Phase 2 — Dynamic scanner funnel | Implementation complete; shadow review pending | Pure pre-scan, hysteresis, protected tracking, scheduling, metrics, and dashboard are implemented without V2 order authority |
+| Phase 2 — Dynamic scanner funnel | Complete | Exit gate passed on 2026-10-08 after two live Demo snapshots, stable candidate pool, dynamic deep/action pools, and in-limit latency; shadow only |
 | Phase 3 — Portfolio intelligence | Not started | — |
 | Phase 4 — Context and playbooks | Not started | — |
 | Phase 5 — Thesis, conflicts, ranking | Not started | — |
@@ -86,7 +86,7 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE1_REVIEW.md`](THESISE
 - [x] Persist append-only, deduplicated scanner snapshots and exclusion metrics.
 - [x] Expose candidate, deep, action, churn, latency, API-use, and exclusion evidence on the System page.
 - [x] Preserve the frozen V1 10-symbol execution universe and zero V2 order authority.
-- [ ] Observe live Demo snapshots and approve candidate churn and scan latency against provisional limits.
+- [x] Observe live Demo snapshots and approve candidate churn and scan latency against provisional limits.
 
 Review procedure and parameter contract: [`THESISEDGE_PHASE2_REVIEW.md`](THESISEDGE_PHASE2_REVIEW.md).
 
@@ -100,5 +100,9 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE2_REVIEW.md`](THESISE
 - Candidate count: capped, never padded to a target
 - Protected tracking: armed/open symbols cannot disappear from the tracking schedule
 - Provisional operational limits: churn at or below 25%; funnel latency at or below 2,000 ms
-- Remaining exit gate: Demo runtime observation and human review
-- Next eligible phase: none until Phase 2 exit review is approved
+- Live Demo review: two consecutive snapshots had 289 eligible symbols, 30 stable candidates, 0% churn, two API calls, and funnel latency of 1,585 ms then 1,174 ms
+- Dynamic prioritization review: deep-analysis pool changed from 6 to 8 and the action queue reprioritized while the candidate pool remained stable
+- Connection review: local database, Bybit public API, and Bybit private API were healthy; no new engine-cycle error appeared after the Phase 2 snapshots
+- Protected tracking: deterministic and integration tests cover armed/open symbols; no live protected position existed during the review sample
+- Remaining exit gate: none
+- Next eligible phase: Phase 3 — Portfolio correlation and relative strength (not started; requires explicit approval)
