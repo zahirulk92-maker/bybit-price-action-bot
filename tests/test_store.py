@@ -77,6 +77,29 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(btc["reason"], "Worker restarted")
         self.assertEqual(eth["status"], "EXPIRED")
 
+    def test_phase2_scanner_snapshot_round_trip_is_deduplicated(self):
+        snapshot = {
+            "snapshot_id": "scanner-1",
+            "computed_at_ms": 123456,
+            "schema_version": "thesisedge.phase2.v1",
+            "metrics": {"candidate_count": 1},
+            "candidate_pool": [{"symbol": "BTCUSDT"}],
+            "deep_analysis_pool": [],
+            "action_queue": [],
+            "tracking_symbols": ["BTCUSDT"],
+            "v2_execution_authority": False,
+        }
+        self.store.record_thesisedge_universe(snapshot)
+        self.store.record_thesisedge_universe(snapshot)
+        saved = self.store.latest_thesisedge_universe()
+        count = self.store._execute(
+            "SELECT COUNT(*) AS total FROM thesisedge_universe_snapshots", fetch="one"
+        )
+        self.assertEqual(saved["candidate_pool"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(saved["mode"], "shadow")
+        self.assertFalse(saved["v2_execution_authority"])
+        self.assertEqual(dict(count)["total"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

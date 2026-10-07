@@ -15,7 +15,7 @@ from .notify import TelegramNotifier, format_alert
 from .risk import one_r_price, position_size
 from .store import Store
 from .structure import build_structure_map
-from .universe import select_symbols
+from .universe import build_scanner_funnel, select_symbols
 from .v2_foundation import V2FeatureFlags, build_v1_decision_audit
 
 
@@ -71,6 +71,7 @@ class TradingEngine:
         self.v2_feature_flags = V2FeatureFlags(**settings.v2_feature_modes())
         self.symbols: list[str] = []
         self.last_universe_refresh_ms = 0
+        self.last_scanner_refresh_ms = 0
         self.last_processed_candle: dict[str, int] = {}
         self.armed: dict[str, ArmedSignal] = {}
         self.journal_ids: dict[str, int] = {}
@@ -171,21 +172,77 @@ class TradingEngine:
 
     def refresh_universe(self, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
-        if not force and now_ms - self.last_universe_refresh_ms < UNIVERSE_REFRESH_MS:
+        v1_due = force or now_ms - self.last_universe_refresh_ms >= UNIVERSE_REFRESH_MS
+        scanner_interval_ms = self.settings.scanner_refresh_seconds * 1_000
+        scanner_due = (
+            self.settings.v2_universe_mode == "shadow"
+            and (force or now_ms - self.last_scanner_refresh_ms >= scanner_interval_ms)
+        )
+        if not v1_due and not scanner_due:
             return
-        tickers = self.gateway.tickers()
-        instruments = self.gateway.instruments()
-        selected = select_symbols(tickers, instruments, self.settings.universe_size, now_ms)
-        if len(selected) < self.settings.universe_size:
-            raise RuntimeError(
-                f"Only {len(selected)} symbols passed liquidity filters; expected "
-                f"{self.settings.universe_size}"
-            )
-        # Never stop monitoring a symbol that still has an open local trade.
-        self.symbols = list(dict.fromkeys(selected + list(self.trades)))
-        self.last_universe_refresh_ms = now_ms
-        self.store.event("UNIVERSE_UPDATED", symbols=self.symbols)
-        LOGGER.info("Universe: %s", ", ".join(self.symbols))
+        started = time.monotonic()
+        try:
+            tickers = self.gateway.tickers()
+            instruments = self.gateway.instruments()
+        except Exception:
+            if v1_due:
+                raise
+            # A Phase-2-only refresh must not interrupt V1 symbol processing.
+            LOGGER.exception("ThesisEdge Phase-2 universe request failed")
+            try:
+                self.store.event("THESISEDGE_SCANNER_FUNNEL_ERROR", stage="universe_request")
+            except Exception:
+                LOGGER.exception("Could not persist scanner request failure")
+            self.last_scanner_refresh_ms = now_ms
+            return
+        if v1_due:
+            selected = select_symbols(tickers, instruments, self.settings.universe_size, now_ms)
+            if len(selected) < self.settings.universe_size:
+                raise RuntimeError(
+                    f"Only {len(selected)} symbols passed liquidity filters; expected "
+                    f"{self.settings.universe_size}"
+                )
+            # Never stop monitoring a symbol that still has an open local trade.
+            self.symbols = list(dict.fromkeys(selected + list(self.trades)))
+            self.last_universe_refresh_ms = now_ms
+            self.store.event("UNIVERSE_UPDATED", symbols=self.symbols)
+            LOGGER.info("Universe: %s", ", ".join(self.symbols))
+        if scanner_due:
+            try:
+                market_locations = {
+                    str(row.get("symbol") or ""): row
+                    for row in self.store.market_snapshots()
+                    if row.get("symbol")
+                }
+                snapshot = build_scanner_funnel(
+                    tickers,
+                    instruments,
+                    parameters=self.settings.scanner_parameters(),
+                    previous_snapshot=self.store.latest_thesisedge_universe(),
+                    protected_symbols=set(self.armed) | set(self.trades),
+                    market_locations=market_locations,
+                    now_ms=now_ms,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    api_calls=2,
+                )
+                self.store.record_thesisedge_universe(snapshot, mode="shadow")
+                self.store.event(
+                    "THESISEDGE_SCANNER_FUNNEL_UPDATED",
+                    candidate_count=snapshot["metrics"]["candidate_count"],
+                    deep_analysis_count=snapshot["metrics"]["deep_analysis_count"],
+                    action_queue_count=snapshot["metrics"]["action_queue_count"],
+                    churn_rate=snapshot["metrics"]["churn_rate"],
+                    elapsed_ms=snapshot["metrics"]["elapsed_ms"],
+                )
+            except Exception:
+                # Phase-2 observation must never alter the frozen V1 universe.
+                LOGGER.exception("ThesisEdge Phase-2 scanner funnel failed")
+                try:
+                    self.store.event("THESISEDGE_SCANNER_FUNNEL_ERROR")
+                except Exception:
+                    LOGGER.exception("Could not persist scanner funnel failure")
+            finally:
+                self.last_scanner_refresh_ms = now_ms
 
     def run_once(self) -> None:
         self.refresh_universe(force=not self.symbols)

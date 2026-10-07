@@ -65,6 +65,15 @@ class ChartApiTests(unittest.TestCase):
         self.assertIn("thesisedge-sidebar-hidden", dashboard)
         self.assertIn("function toggleNavigation()", dashboard)
 
+    def test_system_page_contains_phase2_scanner_funnel(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="scannerMetrics"', dashboard)
+        self.assertIn('id="scannerCandidates"', dashboard)
+        self.assertIn('id="scannerDeep"', dashboard)
+        self.assertIn('id="scannerActions"', dashboard)
+        self.assertIn("function renderScannerFunnel", dashboard)
+        self.assertIn("renderScannerFunnel(data.v2_scanner||{})", dashboard)
+
     def test_structure_overlay_keeps_raw_data_but_deduplicates_the_display(self):
         dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn("function selectStructureEvents", dashboard)
@@ -113,6 +122,42 @@ class ChartApiTests(unittest.TestCase):
         if web.settings.api_key and web.settings.api_secret:
             self.assertEqual(result["wallet"]["equity"], 1000.0)
         self.assertEqual(result["today"]["opened"], 0)
+
+    def test_status_exposes_current_phase2_shadow_snapshot(self):
+        now = int(time.time() * 1000)
+        snapshot = {
+            "snapshot_id": "phase2-1",
+            "computed_at_ms": now,
+            "mode": "shadow",
+            "candidate_pool": [{"symbol": "BTCUSDT"}],
+            "deep_analysis_pool": [],
+            "action_queue": [],
+            "tracking_symbols": ["BTCUSDT"],
+            "metrics": {
+                "candidate_count": 1,
+                "churn_within_limit": True,
+                "latency_within_limit": True,
+            },
+        }
+        configured = replace(web.settings, v2_universe_mode="shadow")
+        with patch.object(web, "settings", configured), patch.object(
+            web, "_wallet_status", return_value={"available": False}
+        ), patch.object(web, "_real_pnl_status", return_value={"available": False, "rows": []}), patch.object(
+            web.store, "get_heartbeat", return_value={}
+        ), patch.object(web.store, "trading_enabled", return_value=True), patch.object(
+            web.store, "market_snapshots", return_value=[]
+        ), patch.object(web.store, "recent_trades", return_value=[]), patch.object(
+            web.store, "recent_signal_journal", return_value=[]
+        ), patch.object(web.store, "decision_snapshots", return_value=[]), patch.object(
+            web.store, "recent_events", return_value=[]
+        ), patch.object(web.store, "events_since", return_value=[]), patch.object(
+            web.store, "latest_thesisedge_universe", return_value=snapshot
+        ):
+            result = web.api_status("test")
+
+        self.assertEqual(result["v2_scanner"]["status"], "healthy")
+        self.assertEqual(result["v2_scanner"]["candidate_pool"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(result["v2_scanner"]["mode"], "shadow")
 
     def test_today_summary_counts_exit_types_and_trailing(self):
         events = [

@@ -669,6 +669,26 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
     signal_journal = _reconciled_signal_journal(
         store.recent_signal_journal(100), markets, worker_online
     )
+    latest_v2_scanner = store.latest_thesisedge_universe()
+    if settings.v2_universe_mode == "shadow" and latest_v2_scanner:
+        v2_scanner = latest_v2_scanner
+        snapshot_age = now_ms - int(v2_scanner.get("computed_at_ms") or 0)
+        operational = v2_scanner.get("metrics") or {}
+        v2_scanner["status"] = (
+            "stale" if snapshot_age > settings.scanner_refresh_seconds * 3_000 else
+            "attention" if operational.get("churn_within_limit") is False or operational.get("latency_within_limit") is False else
+            "healthy"
+        )
+    else:
+        v2_scanner = {
+            "mode": settings.v2_universe_mode,
+            "status": "waiting" if settings.v2_universe_mode == "shadow" else "off",
+            "candidate_pool": [],
+            "deep_analysis_pool": [],
+            "action_queue": [],
+            "tracking_symbols": [],
+            "metrics": {},
+        }
     return {
         "environment": "demo" if settings.demo else "live",
         "execution": "orders" if settings.enable_order_placement else "signals",
@@ -694,6 +714,7 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "markets": markets,
         "decisions": store.decision_snapshots(),
         "signal_journal": signal_journal,
+        "v2_scanner": v2_scanner,
         "open_trades": trades,
         "events": store.recent_events(40),
         "strategy": {

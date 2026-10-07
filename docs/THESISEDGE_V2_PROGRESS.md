@@ -8,7 +8,7 @@ This file records implementation status only. The locked design remains in [`THE
 |---|---|---|
 | Phase 0 — Baseline and instrumentation | Complete | Exit gate passed locally on 2026-10-07; 39/39 tests and deterministic replay checks passed |
 | Phase 1 — Market Structure Map | Complete | Exit gate passed on 2026-10-08 after BTC, ETH, and ZEC 1h chart review and overlay-noise cleanup; shadow only |
-| Phase 2 — Dynamic scanner funnel | Not started | — |
+| Phase 2 — Dynamic scanner funnel | Implementation complete; shadow review pending | Pure pre-scan, hysteresis, protected tracking, scheduling, metrics, and dashboard are implemented without V2 order authority |
 | Phase 3 — Portfolio intelligence | Not started | — |
 | Phase 4 — Context and playbooks | Not started | — |
 | Phase 5 — Thesis, conflicts, ranking | Not started | — |
@@ -74,4 +74,31 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE1_REVIEW.md`](THESISE
 - Human chart sample: `BTCUSDT`, `ETHUSDT`, and `ZECUSDT` on 1h, reviewed 2026-10-08
 - Visual cleanup: nearby duplicate events and overlapping zones are clustered for display only; raw audit data is unchanged
 - Remaining exit gate: none
-- Next eligible phase: Phase 2 — Dynamic scanner funnel (not started)
+- Next eligible phase: Phase 2 — Dynamic scanner funnel (approved and started on 2026-10-08)
+
+## Phase 2 implementation checklist
+
+- [x] Load and evaluate all eligible Bybit linear USDT perpetual instruments.
+- [x] Apply explicit listing-age, turnover, open-interest, spread, and anomaly pre-scan rules.
+- [x] Keep a non-forced candidate pool with incumbent/newcomer hysteresis.
+- [x] Prioritize near-zone and protected symbols into deep-analysis and action queues.
+- [x] Keep armed/open symbols in the tracking schedule even when they fail discovery filters.
+- [x] Persist append-only, deduplicated scanner snapshots and exclusion metrics.
+- [x] Expose candidate, deep, action, churn, latency, API-use, and exclusion evidence on the System page.
+- [x] Preserve the frozen V1 10-symbol execution universe and zero V2 order authority.
+- [ ] Observe live Demo snapshots and approve candidate churn and scan latency against provisional limits.
+
+Review procedure and parameter contract: [`THESISEDGE_PHASE2_REVIEW.md`](THESISEDGE_PHASE2_REVIEW.md).
+
+## Phase 2 automated verification record
+
+- Python compile check: passed
+- Dashboard inline JavaScript syntax: passed
+- Full regression suite after implementation: `66/66` passed
+- V1 strategy/risk changes: none
+- Phase 2 order authority: none (`shadow` only)
+- Candidate count: capped, never padded to a target
+- Protected tracking: armed/open symbols cannot disappear from the tracking schedule
+- Provisional operational limits: churn at or below 25%; funnel latency at or below 2,000 ms
+- Remaining exit gate: Demo runtime observation and human review
+- Next eligible phase: none until Phase 2 exit review is approved

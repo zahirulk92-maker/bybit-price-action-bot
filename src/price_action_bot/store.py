@@ -132,6 +132,15 @@ class Store:
             """,
             "CREATE INDEX IF NOT EXISTS idx_thesisedge_structure_symbol_time "
             "ON thesisedge_structure_snapshots(symbol, candle_time_ms)",
+            f"""
+            CREATE TABLE IF NOT EXISTS thesisedge_universe_snapshots (
+                id {id_column}, snapshot_id TEXT NOT NULL UNIQUE,
+                created_at_ms BIGINT NOT NULL, computed_at_ms BIGINT NOT NULL,
+                schema_version TEXT NOT NULL, mode TEXT NOT NULL, payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_thesisedge_universe_time "
+            "ON thesisedge_universe_snapshots(computed_at_ms)",
         ]
         for statement in statements:
             self._execute(statement)
@@ -546,6 +555,40 @@ class Store:
                FROM thesisedge_structure_snapshots
                WHERE symbol=? ORDER BY candle_time_ms DESC, id DESC LIMIT 1""",
             (symbol,),
+            fetch="one",
+        )
+        if row is None:
+            return None
+        item = self._dict(row)
+        payload = json.loads(item["payload"])
+        payload["mode"] = item["mode"]
+        payload["stored_at_ms"] = item["created_at_ms"]
+        return payload
+
+    def record_thesisedge_universe(
+        self, snapshot: dict[str, object], mode: str = "shadow"
+    ) -> None:
+        """Persist an append-only, deduplicated Phase-2 scanner snapshot."""
+        self._execute(
+            """INSERT INTO thesisedge_universe_snapshots
+               (snapshot_id, created_at_ms, computed_at_ms, schema_version, mode, payload)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(snapshot_id) DO NOTHING""",
+            (
+                str(snapshot["snapshot_id"]),
+                int(time.time() * 1000),
+                int(snapshot["computed_at_ms"]),
+                str(snapshot["schema_version"]),
+                mode,
+                json.dumps(snapshot, sort_keys=True),
+            ),
+        )
+
+    def latest_thesisedge_universe(self) -> dict[str, Any] | None:
+        row = self._execute(
+            """SELECT payload, mode, created_at_ms
+               FROM thesisedge_universe_snapshots
+               ORDER BY computed_at_ms DESC, id DESC LIMIT 1""",
             fetch="one",
         )
         if row is None:

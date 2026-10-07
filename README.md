@@ -16,6 +16,8 @@ python -m price_action_bot --replay-v1 100
 
 Phase 1 adds a closed-candle, non-repainting market-structure map in `shadow` mode. It records major/internal swings, HH/HL or LH/LL state, protected levels, zone lifecycle, BOS/CHoCH, sweeps, and failed breaks. Enable or hide its chart evidence with the `V2 Structure` layer. The provisional parameters and required human exit review are documented in [`docs/THESISEDGE_PHASE1_REVIEW.md`](docs/THESISEDGE_PHASE1_REVIEW.md).
 
+Phase 2 adds a separate Dynamic Scanner Funnel in `shadow` mode. It pre-screens eligible Bybit linear USDT perpetuals for listing age, liquidity, open interest, spread, and abnormal 24h movement; keeps a stable candidate pool with entry/exit hysteresis; then prioritizes symbols near known market-structure locations into deep-analysis and action queues. Armed/open symbols remain tracked. The funnel is observation-only: it does not replace the frozen V1 10-symbol execution universe and cannot place or influence orders. Its current metrics and exclusions are visible on the System page. The provisional contract and exit review are documented in [`docs/THESISEDGE_PHASE2_REVIEW.md`](docs/THESISEDGE_PHASE2_REVIEW.md).
+
 ## Strategy implemented
 
 1. Refresh a 10-symbol universe daily. `BTCUSDT` and `ETHUSDT` stay fixed; the other eight are ranked by 24h turnover, open interest and bid/ask spread. Listings younger than 30 days and non-standard underlyings are excluded.

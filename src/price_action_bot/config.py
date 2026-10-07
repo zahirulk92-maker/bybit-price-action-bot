@@ -61,6 +61,22 @@ class Settings:
     v2_taker_fee_rate: float = 0.00055
     v2_slippage_rate: float = 0.00020
     v2_max_friction_risk_fraction: float = 0.25
+    scanner_min_listing_age_days: int = 30
+    scanner_min_turnover_24h: float = 1_000_000.0
+    scanner_min_open_interest: float = 250_000.0
+    scanner_max_spread_fraction: float = 0.0015
+    scanner_anomaly_move_fraction: float = 0.25
+    scanner_candidate_max: int = 30
+    scanner_deep_analysis_max: int = 15
+    scanner_action_queue_max: int = 5
+    scanner_newcomer_advantage_fraction: float = 0.05
+    scanner_exit_grace_scans: int = 2
+    scanner_near_zone_fraction: float = 0.01
+    scanner_high_volatility_fraction: float = 0.12
+    scanner_abnormal_volatility_fraction: float = 0.35
+    scanner_churn_limit_fraction: float = 0.25
+    scanner_latency_limit_ms: int = 2_000
+    scanner_refresh_seconds: int = 300
     structure_internal_swing_width: int = 2
     structure_major_swing_width: int = 5
     structure_atr_period: int = 14
@@ -114,6 +130,22 @@ class Settings:
             v2_max_friction_risk_fraction=float(
                 os.getenv("V2_MAX_FRICTION_RISK_FRACTION", "0.25")
             ),
+            scanner_min_listing_age_days=int(os.getenv("SCANNER_MIN_LISTING_AGE_DAYS", "30")),
+            scanner_min_turnover_24h=float(os.getenv("SCANNER_MIN_TURNOVER_24H", "1000000")),
+            scanner_min_open_interest=float(os.getenv("SCANNER_MIN_OPEN_INTEREST", "250000")),
+            scanner_max_spread_fraction=float(os.getenv("SCANNER_MAX_SPREAD_FRACTION", "0.0015")),
+            scanner_anomaly_move_fraction=float(os.getenv("SCANNER_ANOMALY_MOVE_FRACTION", "0.25")),
+            scanner_candidate_max=int(os.getenv("SCANNER_CANDIDATE_MAX", "30")),
+            scanner_deep_analysis_max=int(os.getenv("SCANNER_DEEP_ANALYSIS_MAX", "15")),
+            scanner_action_queue_max=int(os.getenv("SCANNER_ACTION_QUEUE_MAX", "5")),
+            scanner_newcomer_advantage_fraction=float(os.getenv("SCANNER_NEWCOMER_ADVANTAGE_FRACTION", "0.05")),
+            scanner_exit_grace_scans=int(os.getenv("SCANNER_EXIT_GRACE_SCANS", "2")),
+            scanner_near_zone_fraction=float(os.getenv("SCANNER_NEAR_ZONE_FRACTION", "0.01")),
+            scanner_high_volatility_fraction=float(os.getenv("SCANNER_HIGH_VOLATILITY_FRACTION", "0.12")),
+            scanner_abnormal_volatility_fraction=float(os.getenv("SCANNER_ABNORMAL_VOLATILITY_FRACTION", "0.35")),
+            scanner_churn_limit_fraction=float(os.getenv("SCANNER_CHURN_LIMIT_FRACTION", "0.25")),
+            scanner_latency_limit_ms=int(os.getenv("SCANNER_LATENCY_LIMIT_MS", "2000")),
+            scanner_refresh_seconds=int(os.getenv("SCANNER_REFRESH_SECONDS", "300")),
             structure_internal_swing_width=int(os.getenv("STRUCTURE_INTERNAL_SWING_WIDTH", "2")),
             structure_major_swing_width=int(os.getenv("STRUCTURE_MAJOR_SWING_WIDTH", "5")),
             structure_atr_period=int(os.getenv("STRUCTURE_ATR_PERIOD", "14")),
@@ -172,6 +204,9 @@ class Settings:
             raise ValueError("V2 fee and slippage rates cannot be negative")
         if not 0 <= self.v2_max_friction_risk_fraction < 1:
             raise ValueError("V2_MAX_FRICTION_RISK_FRACTION must be between 0 and 1")
+        self.scanner_parameters().validate()
+        if not 60 <= self.scanner_refresh_seconds <= 3_600:
+            raise ValueError("SCANNER_REFRESH_SECONDS must be between 60 and 3600")
         self.structure_parameters().validate()
 
     def recovery_policy(self):
@@ -207,4 +242,25 @@ class Settings:
             invalidation_buffer_atr=self.structure_invalidation_buffer_atr,
             failed_break_window=self.structure_failed_break_window,
             max_debug_zones=self.structure_max_debug_zones,
+        )
+
+    def scanner_parameters(self):
+        from .universe import ScannerFunnelParameters
+
+        return ScannerFunnelParameters(
+            min_listing_age_days=self.scanner_min_listing_age_days,
+            min_turnover_24h=self.scanner_min_turnover_24h,
+            min_open_interest=self.scanner_min_open_interest,
+            max_spread_fraction=self.scanner_max_spread_fraction,
+            anomaly_move_fraction=self.scanner_anomaly_move_fraction,
+            candidate_max=self.scanner_candidate_max,
+            deep_analysis_max=self.scanner_deep_analysis_max,
+            action_queue_max=self.scanner_action_queue_max,
+            newcomer_advantage_fraction=self.scanner_newcomer_advantage_fraction,
+            exit_grace_scans=self.scanner_exit_grace_scans,
+            near_zone_fraction=self.scanner_near_zone_fraction,
+            high_volatility_fraction=self.scanner_high_volatility_fraction,
+            abnormal_volatility_fraction=self.scanner_abnormal_volatility_fraction,
+            churn_limit_fraction=self.scanner_churn_limit_fraction,
+            latency_limit_ms=self.scanner_latency_limit_ms,
         )
