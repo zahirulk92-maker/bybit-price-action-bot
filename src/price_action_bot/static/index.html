@@ -456,6 +456,36 @@
     function tvLine(data,color,title,lineStyle=0){const series=state.tvChart.addLineSeries({color,lineWidth:1,lineStyle,priceLineVisible:false,lastValueVisible:true,title});series.setData(data);state.tvLines.push(series);}
     function renderPriceLadder(trade,current){const ladder=$('chartLadder');if(!trade){ladder.hidden=true;ladder.innerHTML='';return;}const levels=[['TP3',trade.target,'tp3'],['TP2',trade.tp2_target,'tp2'],['TP1',trade.one_r_target,'tp1'],['CURRENT',current,'current'],['ENTRY',trade.entry,'entry'],['SL',trade.stop,'sl']].filter(([,price])=>Number.isFinite(Number(price))&&Number(price)>0).sort((a,b)=>Number(b[1])-Number(a[1]));ladder.innerHTML=levels.map(([label,price,kind])=>`<div class="ladder-row ${kind==='current'?'current':`ladder-${kind}`}"><span>${label}</span><strong>${fmt(price)}</strong></div>`).join('');ladder.hidden=false;}
     function renderStructureSummary(structure){const root=$('structureSummary');if(!root)return;if(!structure||structure.data_quality!=='complete'){root.innerHTML=`<div class="structure-metric"><span>Structure map</span><strong>${esc(structure?.data_quality||'Unavailable')}</strong></div>`;return;}const active=(structure.zones||[]).filter(z=>z.state!=='invalid'),latestEvent=(structure.events||[]).at(-1);const values=[['State',structure.state],['Bias',structure.bias],['Protected high',fmt(structure.protected_high)],['Protected low',fmt(structure.protected_low)],['Active zones',active.length],['Latest event',latestEvent?`${latestEvent.kind} · ${latestEvent.direction}`:'None']];root.innerHTML=values.map(([label,value])=>`<div class="structure-metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');}
+    function selectStructureEvents(events,candles,maxMarkers=8){
+      const barIndex=new Map(candles.map((c,index)=>[c.time,index])),priority={CHOCH:4,BOS:3,FAILED_BREAK:2,SWEEP:1};
+      const candidates=(events||[]).map(event=>({...event,time:Math.floor(Number(event.source_time_ms)/1000)})).filter(event=>barIndex.has(event.time)).sort((a,b)=>a.time-b.time||(priority[b.kind]||0)-(priority[a.kind]||0));
+      let selected=[];
+      candidates.forEach(event=>{
+        const index=barIndex.get(event.time),rank=priority[event.kind]||0;
+        const sameBar=selected.findIndex(item=>item.direction===event.direction&&barIndex.get(item.time)===index);
+        if(sameBar>=0){if(rank>(priority[selected[sameBar].kind]||0))selected[sameBar]=event;return;}
+        const repeated=selected.findIndex(item=>item.kind===event.kind&&item.direction===event.direction&&Math.abs(barIndex.get(item.time)-index)<=4);
+        if(repeated>=0){selected[repeated]=event;return;}
+        if(event.kind==='SWEEP'&&selected.some(item=>(priority[item.kind]||0)>rank&&item.direction===event.direction&&Math.abs(barIndex.get(item.time)-index)<=2))return;
+        if(rank>1)selected=selected.filter(item=>!(item.kind==='SWEEP'&&item.direction===event.direction&&Math.abs(barIndex.get(item.time)-index)<=2));
+        selected.push(event);
+      });
+      return selected.sort((a,b)=>a.time-b.time).slice(-maxMarkers);
+    }
+    function selectStructureZones(zones,current,candles,maxZones=4){
+      const prices=candles.flatMap(c=>[Number(c.high),Number(c.low)]).filter(Number.isFinite),range=prices.length?Math.max(...prices)-Math.min(...prices):0;
+      const proximity=Math.max(range*.02,Math.abs(Number(current)||0)*.0005),stateRank={'flip-watch':3,tested:2,fresh:1};
+      const candidates=(zones||[]).filter(zone=>zone.state!=='invalid'&&Number.isFinite(Number(zone.center))).sort((a,b)=>Math.abs(Number(a.center)-current)-Math.abs(Number(b.center)-current));
+      const clusters=[];
+      candidates.forEach(zone=>{
+        const center=Number(zone.center),lower=Number.isFinite(Number(zone.lower))?Number(zone.lower):center,upper=Number.isFinite(Number(zone.upper))?Number(zone.upper):center;
+        const cluster=clusters.find(item=>item.kind===zone.kind&&(lower<=item.upper&&upper>=item.lower||Math.abs(center-Number(item.center))<=proximity));
+        if(!cluster){clusters.push({...zone,center,lower,upper,count:1});return;}
+        cluster.count+=1;cluster.lower=Math.min(cluster.lower,lower);cluster.upper=Math.max(cluster.upper,upper);
+        if((stateRank[zone.state]||0)>(stateRank[cluster.state]||0)){cluster.state=zone.state;cluster.center=center;}
+      });
+      return clusters.sort((a,b)=>Math.abs(Number(a.center)-current)-Math.abs(Number(b.center)-current)).slice(0,maxZones);
+    }
     function drawTradingViewChart(){
       const data=state.chart,chart=ensureTvChart(); if(!chart||!data?.candles?.length)return;
       const candles=data.candles.map(c=>({time:Math.floor(Number(c.time)/1000),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)})).filter(c=>c.time&&[c.open,c.high,c.low,c.close].every(Number.isFinite));
@@ -467,15 +497,15 @@
       if(data.structure?.data_quality==='complete'){
         const visibleTimes=new Set(candles.map(c=>c.time));
         if(state.layers.structureswings)(data.structure.major_swings||[]).slice(-8).forEach(s=>{const time=Math.floor(Number(s.source_time_ms)/1000);if(visibleTimes.has(time))markers.push({time,position:s.kind==='low'?'belowBar':'aboveBar',color:s.kind==='low'?'#3de3c2':'#ff8f70',shape:'circle',text:s.label||s.kind});});
-        if(state.layers.structureevents)(data.structure.events||[]).slice(-8).forEach(e=>{const time=Math.floor(Number(e.source_time_ms)/1000);if(visibleTimes.has(time))markers.push({time,position:e.direction==='bullish'?'belowBar':'aboveBar',color:e.kind==='CHOCH'?'#ffc85a':e.kind==='SWEEP'?'#c48cff':'#68b7ff',shape:e.direction==='bullish'?'arrowUp':'arrowDown',text:e.kind});});
+        if(state.layers.structureevents)selectStructureEvents(data.structure.events,candles).forEach(e=>markers.push({time:e.time,position:e.direction==='bullish'?'belowBar':'aboveBar',color:e.kind==='CHOCH'?'#ffc85a':e.kind==='SWEEP'?'#c48cff':'#68b7ff',shape:e.direction==='bullish'?'arrowUp':'arrowDown',text:e.kind}));
       }
       markers.sort((a,b)=>a.time-b.time);state.tvCandle.setMarkers(markers);
       state.tvLines.forEach(series=>chart.removeSeries(series));state.tvLines=[];const times=candles.map(c=>c.time),lastTime=times[times.length-1];
       const horizontal=(value,color,title,lineStyle=0)=>{const n=Number(value);if(!Number.isFinite(n)||n<=0)return;tvLine([{time:times[0],value:n},{time:lastTime,value:n}],color,title,lineStyle);};
       if(state.layers.levels){const current=candles[candles.length-1].close,support=Number(data.support),resistance=Number(data.resistance),supportBroken=Number.isFinite(support)&&current<support,resistanceBroken=Number.isFinite(resistance)&&current>resistance;horizontal(support,supportBroken?colors.amber:'#3f7d75',supportBroken?'Broken support · flip watch':'Support',supportBroken?2:2);horizontal(resistance,resistanceBroken?colors.amber:'#7f5360',resistanceBroken?'Broken resistance · flip watch':'Resistance',resistanceBroken?2:2);}
       if(state.layers.structurezones&&data.structure?.data_quality==='complete'){
-        const activeZones=(data.structure.zones||[]).filter(z=>z.state!=='invalid').slice(-4);
-        activeZones.forEach(z=>{const color=z.state==='flip-watch'?colors.amber:z.kind==='support'?'#2d7169':'#744854';horizontal(z.center,color,`${z.kind} · ${z.state}`,2);});
+        const current=candles[candles.length-1].close,activeZones=selectStructureZones(data.structure.zones,current,candles);
+        activeZones.forEach(z=>{const color=z.state==='flip-watch'?colors.amber:z.kind==='support'?'#2d7169':'#744854',count=z.count>1?` ×${z.count}`:'';horizontal(z.center,color,`${z.kind} · ${z.state}${count}`,2);});
         horizontal(data.structure.protected_high,colors.amber,'Protected high',3);horizontal(data.structure.protected_low,colors.amber,'Protected low',3);
       }
       const activeTrade=state.openTrades.find(row=>row.symbol===state.selected)?.trade;

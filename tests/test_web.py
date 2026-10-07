@@ -65,6 +65,14 @@ class ChartApiTests(unittest.TestCase):
         self.assertIn("thesisedge-sidebar-hidden", dashboard)
         self.assertIn("function toggleNavigation()", dashboard)
 
+    def test_structure_overlay_keeps_raw_data_but_deduplicates_the_display(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("function selectStructureEvents", dashboard)
+        self.assertIn("priority={CHOCH:4,BOS:3,FAILED_BREAK:2,SWEEP:1}", dashboard)
+        self.assertIn("function selectStructureZones", dashboard)
+        self.assertIn("selectStructureEvents(data.structure.events,candles)", dashboard)
+        self.assertIn("selectStructureZones(data.structure.zones,current,candles)", dashboard)
+
     def test_status_exposes_scanner_heartbeat(self):
         now = int(time.time() * 1000)
         heartbeat = {
