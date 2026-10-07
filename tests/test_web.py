@@ -82,6 +82,10 @@ class ChartApiTests(unittest.TestCase):
         self.assertIn('id="portfolioSelection"', dashboard)
         self.assertIn("function renderPortfolioMap", dashboard)
         self.assertIn("renderPortfolioMap(data.v2_portfolio||{})", dashboard)
+        self.assertIn("relative_strength_order", dashboard)
+        self.assertIn("btc_correlation", dashboard)
+        self.assertIn("btc_beta", dashboard)
+        self.assertIn("strongest → weakest", dashboard)
 
     def test_structure_overlay_keeps_raw_data_but_deduplicates_the_display(self):
         dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
