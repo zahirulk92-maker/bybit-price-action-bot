@@ -12,6 +12,7 @@ from .exchange import BybitGateway
 from .management import build_recovery_plan
 from .models import ArmedSignal, Candle, MarketContext, SignalState, Trade
 from .notify import TelegramNotifier, format_alert
+from .portfolio import build_portfolio_map
 from .risk import one_r_price, position_size
 from .store import Store
 from .structure import build_structure_map
@@ -72,6 +73,7 @@ class TradingEngine:
         self.symbols: list[str] = []
         self.last_universe_refresh_ms = 0
         self.last_scanner_refresh_ms = 0
+        self.last_portfolio_refresh_ms = 0
         self.last_processed_candle: dict[str, int] = {}
         self.armed: dict[str, ArmedSignal] = {}
         self.journal_ids: dict[str, int] = {}
@@ -170,6 +172,109 @@ class TradingEngine:
             except Exception:
                 LOGGER.exception("Could not persist structure failure for %s", symbol)
 
+    def _record_phase3_portfolio(
+        self, scanner_snapshot: dict[str, object], now_ms: int
+    ) -> None:
+        """Build the Phase-3 portfolio map without changing V1 decisions or risk."""
+        if self.settings.v2_portfolio_mode != "shadow":
+            return
+        refresh_ms = self.settings.portfolio_refresh_seconds * 1_000
+        if now_ms - self.last_portfolio_refresh_ms < refresh_ms:
+            return
+        self.last_portfolio_refresh_ms = now_ms
+        started = time.monotonic()
+        try:
+            deep_pool = list(scanner_snapshot.get("deep_analysis_pool") or [])
+            action_queue = list(scanner_snapshot.get("action_queue") or [])
+            analysis_symbols = {"BTCUSDT"}
+            analysis_symbols.update(str(row.get("symbol") or "") for row in deep_pool)
+            analysis_symbols.update(self.armed)
+            analysis_symbols.update(self.trades)
+            analysis_symbols.discard("")
+
+            markets = {
+                str(row.get("symbol") or ""): row
+                for row in self.store.market_snapshots()
+                if row.get("symbol")
+            }
+            opportunities = []
+            for row in action_queue:
+                symbol = str(row.get("symbol") or "")
+                if not symbol:
+                    continue
+                if symbol in self.armed:
+                    side = self.armed[symbol].pattern.side
+                    side_source = "armed_signal"
+                elif symbol in self.trades:
+                    side = self.trades[symbol].side
+                    side_source = "open_position"
+                else:
+                    side = str(markets.get(symbol, {}).get("bias") or "unknown")
+                    side_source = "v1_market_bias"
+                opportunities.append({**row, "side": side, "side_source": side_source})
+
+            active_exposures = [
+                {
+                    "symbol": symbol,
+                    "side": trade.side,
+                    "state": "open",
+                    "risk_fraction": self.settings.risk_per_trade,
+                }
+                for symbol, trade in self.trades.items()
+            ]
+            active_exposures.extend(
+                {
+                    "symbol": symbol,
+                    "side": signal.pattern.side,
+                    "state": "armed",
+                    "risk_fraction": self.settings.risk_per_trade,
+                }
+                for symbol, signal in self.armed.items()
+                if symbol not in self.trades
+            )
+
+            candle_series: dict[str, list[Candle]] = {}
+            data_errors: dict[str, str] = {}
+            api_calls = 0
+            limit = self.settings.portfolio_lookback_hours + 1
+            for symbol in sorted(analysis_symbols):
+                try:
+                    api_calls += 1
+                    candles = self.gateway.candles(symbol, "60", limit)
+                    candle_series[symbol] = candles
+                    self.store.archive_thesisedge_candles(symbol, "1h", candles)
+                except Exception as exc:
+                    data_errors[symbol] = type(exc).__name__
+                    LOGGER.warning("Phase-3 candle history unavailable for %s: %s", symbol, exc)
+
+            snapshot = build_portfolio_map(
+                candle_series,
+                opportunities=opportunities,
+                active_exposures=active_exposures,
+                parameters=self.settings.portfolio_parameters(),
+                now_ms=now_ms,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                api_calls=api_calls,
+                data_errors=data_errors,
+            )
+            self.store.record_thesisedge_portfolio(snapshot, mode="shadow")
+            metrics = snapshot["metrics"]
+            self.store.event(
+                "THESISEDGE_PORTFOLIO_MAP_UPDATED",
+                analyzed_symbols=metrics["analyzed_symbols"],
+                cluster_count=metrics["cluster_count"],
+                shared_exposure_group_count=metrics["shared_exposure_group_count"],
+                elapsed_ms=metrics["elapsed_ms"],
+                api_calls=metrics["api_calls"],
+            )
+        except Exception:
+            # Phase-3 observation cannot change or interrupt V1 execution.
+            LOGGER.exception("ThesisEdge Phase-3 portfolio map failed")
+            try:
+                self.store.event("THESISEDGE_PORTFOLIO_MAP_ERROR")
+            except Exception:
+                LOGGER.exception("Could not persist portfolio map failure")
+
     def refresh_universe(self, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
         v1_due = force or now_ms - self.last_universe_refresh_ms >= UNIVERSE_REFRESH_MS
@@ -234,6 +339,7 @@ class TradingEngine:
                     churn_rate=snapshot["metrics"]["churn_rate"],
                     elapsed_ms=snapshot["metrics"]["elapsed_ms"],
                 )
+                self._record_phase3_portfolio(snapshot, now_ms)
             except Exception:
                 # Phase-2 observation must never alter the frozen V1 universe.
                 LOGGER.exception("ThesisEdge Phase-2 scanner funnel failed")

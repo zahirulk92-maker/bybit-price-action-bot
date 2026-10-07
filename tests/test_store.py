@@ -100,6 +100,30 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(saved["v2_execution_authority"])
         self.assertEqual(dict(count)["total"], 1)
 
+    def test_phase3_portfolio_snapshot_round_trip_is_deduplicated(self):
+        snapshot = {
+            "snapshot_id": "portfolio-1",
+            "computed_at_ms": 123456,
+            "schema_version": "thesisedge.phase3.v1",
+            "metrics": {"cluster_count": 1},
+            "clusters": [{"cluster_id": "cluster-01", "members": ["BTCUSDT"]}],
+            "effective_exposure": {"gross_risk_fraction": 0.01},
+            "v2_execution_authority": False,
+            "risk_increase_authority": False,
+        }
+        self.store.record_thesisedge_portfolio(snapshot)
+        self.store.record_thesisedge_portfolio(snapshot)
+
+        saved = self.store.latest_thesisedge_portfolio()
+        count = self.store._execute(
+            "SELECT COUNT(*) AS total FROM thesisedge_portfolio_snapshots", fetch="one"
+        )
+
+        self.assertEqual(saved["clusters"][0]["members"], ["BTCUSDT"])
+        self.assertEqual(saved["mode"], "shadow")
+        self.assertFalse(saved["risk_increase_authority"])
+        self.assertEqual(dict(count)["total"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

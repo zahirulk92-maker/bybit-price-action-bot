@@ -74,6 +74,15 @@ class ChartApiTests(unittest.TestCase):
         self.assertIn("function renderScannerFunnel", dashboard)
         self.assertIn("renderScannerFunnel(data.v2_scanner||{})", dashboard)
 
+    def test_system_page_contains_phase3_portfolio_map(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="portfolioMetrics"', dashboard)
+        self.assertIn('id="portfolioClusters"', dashboard)
+        self.assertIn('id="portfolioExposure"', dashboard)
+        self.assertIn('id="portfolioSelection"', dashboard)
+        self.assertIn("function renderPortfolioMap", dashboard)
+        self.assertIn("renderPortfolioMap(data.v2_portfolio||{})", dashboard)
+
     def test_structure_overlay_keeps_raw_data_but_deduplicates_the_display(self):
         dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn("function selectStructureEvents", dashboard)
@@ -158,6 +167,39 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual(result["v2_scanner"]["status"], "healthy")
         self.assertEqual(result["v2_scanner"]["candidate_pool"][0]["symbol"], "BTCUSDT")
         self.assertEqual(result["v2_scanner"]["mode"], "shadow")
+
+    def test_status_exposes_current_phase3_shadow_snapshot(self):
+        now = int(time.time() * 1000)
+        snapshot = {
+            "snapshot_id": "phase3-1",
+            "computed_at_ms": now,
+            "mode": "shadow",
+            "metrics": {"insufficient_symbols": 0, "cluster_count": 2},
+            "clusters": [],
+            "effective_exposure": {"shared_directional_groups": []},
+            "opportunity_selection": [],
+            "v2_execution_authority": False,
+            "risk_increase_authority": False,
+        }
+        configured = replace(web.settings, v2_portfolio_mode="shadow")
+        with patch.object(web, "settings", configured), patch.object(
+            web, "_wallet_status", return_value={"available": False}
+        ), patch.object(web, "_real_pnl_status", return_value={"available": False, "rows": []}), patch.object(
+            web.store, "get_heartbeat", return_value={}
+        ), patch.object(web.store, "trading_enabled", return_value=True), patch.object(
+            web.store, "market_snapshots", return_value=[]
+        ), patch.object(web.store, "recent_trades", return_value=[]), patch.object(
+            web.store, "recent_signal_journal", return_value=[]
+        ), patch.object(web.store, "decision_snapshots", return_value=[]), patch.object(
+            web.store, "recent_events", return_value=[]
+        ), patch.object(web.store, "events_since", return_value=[]), patch.object(
+            web.store, "latest_thesisedge_universe", return_value=None
+        ), patch.object(web.store, "latest_thesisedge_portfolio", return_value=snapshot):
+            result = web.api_status("test")
+
+        self.assertEqual(result["v2_portfolio"]["status"], "healthy")
+        self.assertEqual(result["v2_portfolio"]["metrics"]["cluster_count"], 2)
+        self.assertFalse(result["v2_portfolio"]["risk_increase_authority"])
 
     def test_today_summary_counts_exit_types_and_trailing(self):
         events = [

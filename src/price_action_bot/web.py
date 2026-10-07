@@ -689,6 +689,29 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
             "tracking_symbols": [],
             "metrics": {},
         }
+    latest_v2_portfolio = store.latest_thesisedge_portfolio()
+    if settings.v2_portfolio_mode == "shadow" and latest_v2_portfolio:
+        v2_portfolio = latest_v2_portfolio
+        portfolio_age = now_ms - int(v2_portfolio.get("computed_at_ms") or 0)
+        v2_portfolio["status"] = (
+            "stale" if portfolio_age > settings.portfolio_refresh_seconds * 3_000 else
+            "attention" if (
+                (v2_portfolio.get("metrics") or {}).get("insufficient_symbols", 0)
+                or v2_portfolio.get("data_errors")
+            ) else
+            "healthy"
+        )
+    else:
+        v2_portfolio = {
+            "mode": settings.v2_portfolio_mode,
+            "status": "waiting" if settings.v2_portfolio_mode == "shadow" else "off",
+            "metrics": {},
+            "features": [],
+            "clusters": [],
+            "effective_exposure": {"positions": [], "shared_directional_groups": []},
+            "opportunity_selection": [],
+            "data_errors": {},
+        }
     return {
         "environment": "demo" if settings.demo else "live",
         "execution": "orders" if settings.enable_order_placement else "signals",
@@ -715,6 +738,7 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "decisions": store.decision_snapshots(),
         "signal_journal": signal_journal,
         "v2_scanner": v2_scanner,
+        "v2_portfolio": v2_portfolio,
         "open_trades": trades,
         "events": store.recent_events(40),
         "strategy": {

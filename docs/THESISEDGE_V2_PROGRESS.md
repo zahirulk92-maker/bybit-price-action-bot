@@ -9,7 +9,7 @@ This file records implementation status only. The locked design remains in [`THE
 | Phase 0 — Baseline and instrumentation | Complete | Exit gate passed locally on 2026-10-07; 39/39 tests and deterministic replay checks passed |
 | Phase 1 — Market Structure Map | Complete | Exit gate passed on 2026-10-08 after BTC, ETH, and ZEC 1h chart review and overlay-noise cleanup; shadow only |
 | Phase 2 — Dynamic scanner funnel | Complete | Exit gate passed on 2026-10-08 after two live Demo snapshots, stable candidate pool, dynamic deep/action pools, and in-limit latency; shadow only |
-| Phase 3 — Portfolio intelligence | Not started | — |
+| Phase 3 — Portfolio correlation and relative strength | Implementation complete; shadow review pending | Closed-1h correlation, BTC beta, confidence, clusters, relative strength, effective exposure, and highest-quality-per-cluster shadow selection; no risk or order authority |
 | Phase 4 — Context and playbooks | Not started | — |
 | Phase 5 — Thesis, conflicts, ranking | Not started | — |
 | Phase 6 — Management and recovery | Policy prototype ready; execution not started | `recovery-70-15-15.v1` pure planner + optional shadow audit; no order authority |
@@ -105,4 +105,30 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE2_REVIEW.md`](THESISE
 - Connection review: local database, Bybit public API, and Bybit private API were healthy; no new engine-cycle error appeared after the Phase 2 snapshots
 - Protected tracking: deterministic and integration tests cover armed/open symbols; no live protected position existed during the review sample
 - Remaining exit gate: none
-- Next eligible phase: Phase 3 — Portfolio correlation and relative strength (not started; requires explicit approval)
+- Next eligible phase: Phase 3 — Portfolio correlation and relative strength (approved and started on 2026-10-08)
+
+## Phase 3 implementation checklist
+
+- [x] Compute rolling BTC beta, BTC correlation, and basket correlation from closed 1h returns.
+- [x] Build dynamic positive-correlation clusters with explicit healthy, weak, and insufficient labels.
+- [x] Rank relative strength inside each cluster.
+- [x] Aggregate open and armed theses into gross and shared same-direction effective exposure.
+- [x] Select the highest-quality healthy opportunity per same-direction cluster in shadow and queue its correlated peers.
+- [x] Return unresolved data at 0% recommended risk and never raise the configured 1% risk.
+- [x] Persist deterministic, append-only portfolio snapshots and retain partial results on per-symbol data failure.
+- [x] Expose portfolio evidence on the authenticated System page.
+- [ ] Complete two-snapshot live Demo review and approve the Phase 3 exit gate.
+
+Review procedure and parameter contract: [`THESISEDGE_PHASE3_REVIEW.md`](THESISEDGE_PHASE3_REVIEW.md).
+
+## Phase 3 automated verification record
+
+- Python compile check: passed
+- Dashboard inline JavaScript syntax: passed
+- Full regression suite after implementation: `76/76` passed
+- Deterministic replay: three correlated BTC/ETH/SOL longs are one shared 3% configured exposure
+- Selection policy: highest healthy quality receives normal 1%; correlated peers and unresolved data receive 0%
+- Failure isolation: one symbol history timeout preserves and labels the remaining partial snapshot
+- V1 strategy/risk changes: none
+- Phase 3 risk or order authority: none (`shadow` only)
+- Remaining exit gate: two-snapshot live Demo review

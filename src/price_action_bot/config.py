@@ -77,6 +77,11 @@ class Settings:
     scanner_churn_limit_fraction: float = 0.25
     scanner_latency_limit_ms: int = 2_000
     scanner_refresh_seconds: int = 300
+    portfolio_lookback_hours: int = 72
+    portfolio_min_overlap: int = 36
+    portfolio_healthy_overlap: int = 60
+    portfolio_cluster_correlation: float = 0.70
+    portfolio_refresh_seconds: int = 900
     structure_internal_swing_width: int = 2
     structure_major_swing_width: int = 5
     structure_atr_period: int = 14
@@ -146,6 +151,11 @@ class Settings:
             scanner_churn_limit_fraction=float(os.getenv("SCANNER_CHURN_LIMIT_FRACTION", "0.25")),
             scanner_latency_limit_ms=int(os.getenv("SCANNER_LATENCY_LIMIT_MS", "2000")),
             scanner_refresh_seconds=int(os.getenv("SCANNER_REFRESH_SECONDS", "300")),
+            portfolio_lookback_hours=int(os.getenv("PORTFOLIO_LOOKBACK_HOURS", "72")),
+            portfolio_min_overlap=int(os.getenv("PORTFOLIO_MIN_OVERLAP", "36")),
+            portfolio_healthy_overlap=int(os.getenv("PORTFOLIO_HEALTHY_OVERLAP", "60")),
+            portfolio_cluster_correlation=float(os.getenv("PORTFOLIO_CLUSTER_CORRELATION", "0.70")),
+            portfolio_refresh_seconds=int(os.getenv("PORTFOLIO_REFRESH_SECONDS", "900")),
             structure_internal_swing_width=int(os.getenv("STRUCTURE_INTERNAL_SWING_WIDTH", "2")),
             structure_major_swing_width=int(os.getenv("STRUCTURE_MAJOR_SWING_WIDTH", "5")),
             structure_atr_period=int(os.getenv("STRUCTURE_ATR_PERIOD", "14")),
@@ -200,6 +210,8 @@ class Settings:
         for name, mode in feature_modes.items():
             if mode not in {"off", "shadow"}:
                 raise ValueError(f"{name} must be off or shadow until explicitly promoted")
+        if self.v2_portfolio_mode == "shadow" and self.v2_universe_mode != "shadow":
+            raise ValueError("V2_PORTFOLIO_MODE=shadow requires V2_UNIVERSE_MODE=shadow")
         if min(self.v2_taker_fee_rate, self.v2_slippage_rate) < 0:
             raise ValueError("V2 fee and slippage rates cannot be negative")
         if not 0 <= self.v2_max_friction_risk_fraction < 1:
@@ -207,6 +219,9 @@ class Settings:
         self.scanner_parameters().validate()
         if not 60 <= self.scanner_refresh_seconds <= 3_600:
             raise ValueError("SCANNER_REFRESH_SECONDS must be between 60 and 3600")
+        self.portfolio_parameters().validate()
+        if not 300 <= self.portfolio_refresh_seconds <= 3_600:
+            raise ValueError("PORTFOLIO_REFRESH_SECONDS must be between 300 and 3600")
         self.structure_parameters().validate()
 
     def recovery_policy(self):
@@ -263,4 +278,15 @@ class Settings:
             abnormal_volatility_fraction=self.scanner_abnormal_volatility_fraction,
             churn_limit_fraction=self.scanner_churn_limit_fraction,
             latency_limit_ms=self.scanner_latency_limit_ms,
+        )
+
+    def portfolio_parameters(self):
+        from .portfolio import PortfolioParameters
+
+        return PortfolioParameters(
+            lookback_hours=self.portfolio_lookback_hours,
+            min_overlap=self.portfolio_min_overlap,
+            healthy_overlap=self.portfolio_healthy_overlap,
+            cluster_correlation=self.portfolio_cluster_correlation,
+            risk_per_trade=self.risk_per_trade,
         )
