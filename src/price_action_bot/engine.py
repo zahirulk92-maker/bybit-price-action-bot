@@ -75,6 +75,11 @@ class TradingEngine:
         self.armed: dict[str, ArmedSignal] = {}
         self.journal_ids: dict[str, int] = {}
         self.trades = store.load_open_trades()
+        expired_signals = store.expire_armed_signal_journal(
+            "Worker restarted before the trigger; setup must be armed again"
+        )
+        if isinstance(expired_signals, int) and expired_signals:
+            store.event("STALE_SIGNALS_EXPIRED", count=expired_signals)
         self.notifier = notifier or TelegramNotifier()
         self._stop_event = threading.Event()
         self.last_daily_report_key = ""
@@ -779,7 +784,12 @@ class TradingEngine:
                         entry=trade.entry,
                         protective_stop=trade.stop,
                     )
-                    self.store.close_trade(symbol)
+                    self.store.close_trade(
+                        symbol,
+                        close_event,
+                        final_stop=trade.stop,
+                        management_state=trade.state.value,
+                    )
                     self.trades.pop(symbol, None)
                     close_label = "TRAILING STOP" if close_event == "TRAILING_STOP_CLOSED" else "STOP LOSS"
                     self.notifier.send(
@@ -815,7 +825,12 @@ class TradingEngine:
                         volume_ratio=reversal["volume_ratio"],
                         reason=reversal["reason"],
                     )
-                    self.store.close_trade(symbol)
+                    self.store.close_trade(
+                        symbol,
+                        "REVERSAL_EXIT",
+                        pattern=reversal["pattern"],
+                        price=price,
+                    )
                     self.trades.pop(symbol, None)
                     self.notifier.send(
                         "⚠️ EARLY EXIT · REVERSAL\n"
@@ -885,7 +900,13 @@ class TradingEngine:
                     remaining_qty = float(position.get("size") or trade.qty * 0.20)
                     self.gateway.close_partial(symbol, trade.side, remaining_qty)
                     trade.tp3_taken = True
-                    self.store.close_trade(symbol)
+                    self.store.save_trade(trade)
+                    self.store.close_trade(
+                        symbol,
+                        "TP3_COMPLETE",
+                        price=price,
+                        quantity=remaining_qty,
+                    )
                     self.trades.pop(symbol, None)
                     self.store.event("TP3_CLOSED", symbol, price=price, qty=remaining_qty)
                     self.notifier.send(
@@ -966,7 +987,11 @@ class TradingEngine:
         for symbol, trade in list(self.trades.items()):
             position = exchange_positions.get(symbol)
             if not position:
-                self.store.close_trade(symbol)
+                self.store.close_trade(
+                    symbol,
+                    "EXCHANGE_RECONCILIATION",
+                    management_state=trade.state.value,
+                )
                 self.trades.pop(symbol, None)
                 self.store.event(
                     "RECONCILED_LOCAL_CLOSED",

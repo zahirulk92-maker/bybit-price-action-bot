@@ -56,7 +56,9 @@ class ReconciliationTests(unittest.TestCase):
         self.engine._reconcile_exchange_positions(force=True)
 
         self.assertNotIn("BTCUSDT", self.engine.trades)
-        self.store.close_trade.assert_called_once_with("BTCUSDT")
+        self.store.close_trade.assert_called_once_with(
+            "BTCUSDT", "EXCHANGE_RECONCILIATION", management_state="POSITION_OPEN"
+        )
         event_names = [call.args[0] for call in self.store.event.call_args_list]
         self.assertIn("RECONCILED_LOCAL_CLOSED", event_names)
 

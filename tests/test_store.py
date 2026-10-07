@@ -26,12 +26,15 @@ class StoreTests(unittest.TestCase):
     def test_trade_history_is_not_overwritten_after_close(self):
         first = Trade("BTCUSDT", "Buy", 0.01, 100, 98, 104, 102)
         self.store.save_trade(first)
-        self.store.close_trade("BTCUSDT")
+        self.store.close_trade("BTCUSDT", "REVERSAL_EXIT", pattern="bearish_engulfing")
         second = Trade("BTCUSDT", "Buy", 0.02, 105, 103, 110, 107, SignalState.POSITION_OPEN)
         self.store.save_trade(second)
         history = self.store.recent_trades()
         self.assertEqual(len(history), 2)
         self.assertEqual(sum(row["status"] == "open" for row in history), 1)
+        closed = next(row for row in history if row["status"] == "closed")
+        self.assertEqual(closed["trade"]["close_reason"], "REVERSAL_EXIT")
+        self.assertEqual(closed["trade"]["close_details"]["pattern"], "bearish_engulfing")
 
     def test_decision_checklist_round_trip(self):
         decision = {
@@ -55,6 +58,24 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(saved["status"], "SIGNAL_ONLY")
         self.assertEqual(saved["pattern"], "bullish_engulfing")
         self.assertEqual(saved["entry"], 101.2)
+
+    def test_worker_restart_expires_orphaned_armed_signals(self):
+        self.store.create_signal_journal(
+            "BTCUSDT", "ARMED", pattern="bullish_engulfing", side="Buy"
+        )
+        self.store.create_signal_journal(
+            "ETHUSDT", "EXPIRED", pattern="bearish_pin_bar", side="Sell"
+        )
+
+        changed = self.store.expire_armed_signal_journal("Worker restarted")
+        rows = self.store.recent_signal_journal()
+
+        self.assertEqual(changed, 1)
+        btc = next(row for row in rows if row["symbol"] == "BTCUSDT")
+        eth = next(row for row in rows if row["symbol"] == "ETHUSDT")
+        self.assertEqual(btc["status"], "EXPIRED_RESTART")
+        self.assertEqual(btc["reason"], "Worker restarted")
+        self.assertEqual(eth["status"], "EXPIRED")
 
 
 if __name__ == "__main__":

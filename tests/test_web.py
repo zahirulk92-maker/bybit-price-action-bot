@@ -107,12 +107,37 @@ class ChartApiTests(unittest.TestCase):
         ]
         trades = [{"status": "open", "trade": {"state": "TRAILING"}}]
         with patch.object(web.store, "events_since", return_value=events):
-            result = web._today_summary(trades)
+            result = web._today_summary(
+                trades,
+                {"available": True, "closed_count": 3, "wins": 2, "losses": 1},
+            )
         self.assertEqual(result["opened"], 2)
         self.assertEqual(result["closed"], 2)
         self.assertEqual(result["tp_closed"], 1)
         self.assertEqual(result["sl_closed"], 1)
         self.assertEqual(result["trailing_active"], 1)
+        self.assertEqual(result["local_opened"], 2)
+        self.assertEqual(result["local_closed"], 2)
+        self.assertEqual(result["exchange_exits"], 3)
+        self.assertEqual(result["exchange_wins"], 2)
+        self.assertEqual(result["exchange_losses"], 1)
+
+    def test_stale_armed_journal_rows_are_not_reported_as_active(self):
+        rows = [
+            {"symbol": "BTCUSDT", "status": "ARMED", "reason": "waiting"},
+            {"symbol": "ETHUSDT", "status": "ARMED", "reason": "waiting"},
+            {"symbol": "XRPUSDT", "status": "EXPIRED", "reason": "timeout"},
+        ]
+        markets = [
+            {"symbol": "BTCUSDT", "signal_state": "SCAN"},
+            {"symbol": "ETHUSDT", "signal_state": "ARMED"},
+        ]
+
+        reconciled = web._reconciled_signal_journal(rows, markets, worker_online=True)
+
+        self.assertEqual(reconciled[0]["status"], "EXPIRED_RESTART")
+        self.assertEqual(reconciled[1]["status"], "ARMED")
+        self.assertEqual(reconciled[2]["status"], "EXPIRED")
 
     def test_real_pnl_uses_bybit_closed_rows(self):
         rows = [

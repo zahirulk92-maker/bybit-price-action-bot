@@ -135,7 +135,9 @@ def _real_pnl_status() -> dict[str, object]:
     return payload
 
 
-def _today_summary(open_trades: list[dict[str, object]]) -> dict[str, int]:
+def _today_summary(
+    open_trades: list[dict[str, object]], pnl: dict[str, object] | None = None
+) -> dict[str, object]:
     now = datetime.now(DHAKA)
     start = datetime.combine(now.date(), datetime.min.time(), tzinfo=DHAKA)
     events = store.events_since(int(start.timestamp() * 1000), limit=2000)
@@ -152,9 +154,20 @@ def _today_summary(open_trades: list[dict[str, object]]) -> dict[str, int]:
     trailing_closed = counts.get("TRAILING_STOP_CLOSED", 0)
     reversal_closed = counts.get("EARLY_EXIT_REVERSAL", 0)
     other_closed = counts.get("POSITION_CLOSED", 0)
+    local_opened = counts.get("POSITION_OPENED", 0)
+    local_closed = tp_closed + sl_closed + trailing_closed + reversal_closed + other_closed
+    pnl = pnl or {}
+    exchange_available = bool(pnl.get("available"))
     return {
-        "opened": counts.get("POSITION_OPENED", 0),
-        "closed": tp_closed + sl_closed + trailing_closed + reversal_closed + other_closed,
+        # Backwards-compatible aliases remain explicitly local.
+        "opened": local_opened,
+        "closed": local_closed,
+        "local_opened": local_opened,
+        "local_closed": local_closed,
+        "exchange_available": exchange_available,
+        "exchange_exits": int(pnl.get("closed_count", 0) or 0) if exchange_available else None,
+        "exchange_wins": int(pnl.get("wins", 0) or 0) if exchange_available else None,
+        "exchange_losses": int(pnl.get("losses", 0) or 0) if exchange_available else None,
         "remaining": len(open_rows),
         "tp_closed": tp_closed,
         "sl_closed": sl_closed,
@@ -164,7 +177,32 @@ def _today_summary(open_trades: list[dict[str, object]]) -> dict[str, int]:
         "tp1_hits": counts.get("PARTIAL_TP", 0),
         "tp2_hits": counts.get("PARTIAL_TP2", 0),
         "trailing_active": trailing,
+        "sources": {
+            "local": "Worker lifecycle events · Asia/Dhaka today",
+            "exchange": "Bybit closed P&L · Asia/Dhaka today",
+        },
     }
+
+
+def _reconciled_signal_journal(
+    rows: list[dict[str, object]],
+    markets: list[dict[str, object]],
+    worker_online: bool,
+) -> list[dict[str, object]]:
+    """Prevent persisted ARMED rows from outliving the worker's active state."""
+    active_symbols = {
+        str(row.get("symbol") or "")
+        for row in markets
+        if worker_online and row.get("signal_state") == "ARMED"
+    }
+    reconciled: list[dict[str, object]] = []
+    for row in rows:
+        item = dict(row)
+        if item.get("status") == "ARMED" and item.get("symbol") not in active_symbols:
+            item["status"] = "EXPIRED_RESTART"
+            item["reason"] = "No longer active in the current worker state"
+        reconciled.append(item)
+    return reconciled
 
 
 def _run_embedded_engine() -> None:
@@ -625,15 +663,21 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "daily_loss": daily_loss,
     }
     trades = store.recent_trades(100)
+    pnl = _real_pnl_status()
+    markets = store.market_snapshots()
+    worker_online = heartbeat_age is not None and heartbeat_age < 90_000
+    signal_journal = _reconciled_signal_journal(
+        store.recent_signal_journal(100), markets, worker_online
+    )
     return {
         "environment": "demo" if settings.demo else "live",
         "execution": "orders" if settings.enable_order_placement else "signals",
-        "worker_online": heartbeat_age is not None and heartbeat_age < 90_000,
+        "worker_online": worker_online,
         "heartbeat": heartbeat,
         "scanner": scanner,
         "wallet": _wallet_status(),
-        "pnl": _real_pnl_status(),
-        "today": _today_summary(trades),
+        "pnl": pnl,
+        "today": _today_summary(trades, pnl),
         "reconciliation": heartbeat_details.get(
             "reconciliation",
             {
@@ -647,9 +691,9 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         ),
         "safety": safety,
         "trading_enabled": store.trading_enabled(),
-        "markets": store.market_snapshots(),
+        "markets": markets,
         "decisions": store.decision_snapshots(),
-        "signal_journal": store.recent_signal_journal(100),
+        "signal_journal": signal_journal,
         "open_trades": trades,
         "events": store.recent_events(40),
         "strategy": {

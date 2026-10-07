@@ -201,6 +201,23 @@ class Store:
             (status, json.dumps(current, sort_keys=True), int(time.time() * 1000), self._dict(row)["id"]),
         )
 
+    def expire_armed_signal_journal(self, reason: str) -> int:
+        """Close orphaned in-memory signals when a worker starts with no armed state."""
+        rows = self._execute(
+            "SELECT id, payload FROM signal_journal WHERE status='ARMED'",
+            fetch="all",
+        )
+        now = int(time.time() * 1000)
+        for row in rows:
+            item = self._dict(row)
+            payload = json.loads(item["payload"])
+            payload["reason"] = reason
+            self._execute(
+                "UPDATE signal_journal SET status='EXPIRED_RESTART', payload=?, updated_at_ms=? WHERE id=?",
+                (json.dumps(payload, sort_keys=True), now, item["id"]),
+            )
+        return len(rows)
+
     def recent_signal_journal(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._execute(
             "SELECT id, symbol, status, payload, created_at_ms, updated_at_ms "
@@ -236,12 +253,24 @@ class Store:
                 (trade.symbol, status, encoded, now, now),
             )
 
-    def close_trade(self, symbol: str) -> None:
+    def close_trade(
+        self, symbol: str, reason: str = "UNKNOWN", **details: object
+    ) -> None:
         now = int(time.time() * 1000)
+        row = self._execute(
+            "SELECT id, payload FROM trades WHERE symbol=? AND status='open' ORDER BY id DESC LIMIT 1",
+            (symbol,),
+            fetch="one",
+        )
+        if not row:
+            return
+        item = self._dict(row)
+        payload = json.loads(item["payload"])
+        payload["close_reason"] = reason
+        payload["close_details"] = details
         self._execute(
-            """UPDATE trades SET status='closed', updated_at_ms=?, closed_at_ms=?
-               WHERE symbol=? AND status='open'""",
-            (now, now, symbol),
+            "UPDATE trades SET status='closed', payload=?, updated_at_ms=?, closed_at_ms=? WHERE id=?",
+            (json.dumps(payload), now, now, item["id"]),
         )
 
     def load_open_trades(self) -> dict[str, Trade]:
