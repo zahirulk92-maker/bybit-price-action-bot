@@ -4,6 +4,7 @@ import io
 import time
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -55,6 +56,14 @@ class ChartApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             web.dashboard_page("unknown", "test")
         self.assertEqual(raised.exception.status_code, 404)
+
+    def test_sidebar_can_be_hidden_and_restored(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="navToggle"', dashboard)
+        self.assertIn('aria-controls="sidebar"', dashboard)
+        self.assertIn('id="navBackdrop"', dashboard)
+        self.assertIn("thesisedge-sidebar-hidden", dashboard)
+        self.assertIn("function toggleNavigation()", dashboard)
 
     def test_status_exposes_scanner_heartbeat(self):
         now = int(time.time() * 1000)
