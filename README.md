@@ -4,6 +4,10 @@ Single-worker Bybit USDT perpetual bot. It runs in **signal-only mode by default
 
 The repository also includes an authenticated web dashboard with real Bybit candlestick/volume charts, 1h support/resistance overlays, a selectable 10-symbol watchlist, worker health, positions, history, strategy settings, and pausing/resuming new entries.
 
+## V2 locked roadmap
+
+The approved V2 direction is documented as **ThesisEdge V2 — Context-Aware Price-Action Intelligence Engine**. Its locked architecture, safety boundaries, phased implementation gates, verification requirements, and change-control policy are in [`docs/THESISEDGE_V2_MASTER_PLAN.md`](docs/THESISEDGE_V2_MASTER_PLAN.md). V2 is planning-only until its phases are implemented and promoted through shadow testing; the document does not enable or modify current trading behaviour.
+
 ## Strategy implemented
 
 1. Refresh a 10-symbol universe daily. `BTCUSDT` and `ETHUSDT` stay fixed; the other eight are ranked by 24h turnover, open interest and bid/ask spread. Listings younger than 30 days and non-standard underlyings are excluded.
