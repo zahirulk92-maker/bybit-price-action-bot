@@ -89,15 +89,24 @@ def _pnl_status_since(start_ms: int, limit: int = 500) -> dict[str, object]:
         wins = sum(_number(row["closed_pnl"]) > 0 for row in rows)
         losses = sum(_number(row["closed_pnl"]) < 0 for row in rows)
         decided = wins + losses
+        gross_profit = sum(max(0.0, _number(row["closed_pnl"])) for row in rows)
+        gross_loss = abs(sum(min(0.0, _number(row["closed_pnl"])) for row in rows))
+        realized_pnl = sum(_number(row["closed_pnl"]) for row in rows)
         payload: dict[str, object] = {
             "available": True,
             "source": "Bybit closed P&L",
-            "realized_pnl": sum(_number(row["closed_pnl"]) for row in rows),
+            "realized_pnl": realized_pnl,
             "fees": sum(_number(row["fees"]) for row in rows),
             "closed_count": len(rows),
             "wins": wins,
             "losses": losses,
             "win_rate": (wins / decided * 100) if decided else 0.0,
+            "gross_profit": gross_profit,
+            "gross_loss": gross_loss,
+            "profit_factor": (gross_profit / gross_loss) if gross_loss else None,
+            "average_trade": (realized_pnl / len(rows)) if rows else None,
+            "best_trade": max((_number(row["closed_pnl"]) for row in rows), default=None),
+            "worst_trade": min((_number(row["closed_pnl"]) for row in rows), default=None),
             "since_ms": start_ms,
             "rows": rows,
         }
@@ -228,6 +237,65 @@ class ControlRequest(BaseModel):
     enabled: bool
 
 
+def _connection_test() -> dict[str, object]:
+    """Run read-only database and Bybit connectivity checks without placing orders."""
+    checks: list[dict[str, object]] = []
+
+    def run(name: str, operation, detail) -> object | None:
+        started = time.perf_counter()
+        try:
+            value = operation()
+            checks.append({
+                "name": name,
+                "status": "passed",
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "detail": detail(value),
+            })
+            return value
+        except Exception as exc:
+            LOGGER.warning("Connection test %s failed: %s", name, exc)
+            checks.append({
+                "name": name,
+                "status": "failed",
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "detail": "Connection unavailable; check the service log",
+            })
+            return None
+
+    run(
+        "Local database",
+        store.get_heartbeat,
+        lambda value: "Readable; worker heartbeat found" if value else "Readable; waiting for heartbeat",
+    )
+    server_time = run(
+        "Bybit public API",
+        chart_gateway.server_time_ms,
+        lambda value: f"Server clock drift {abs(int(time.time() * 1000) - int(value))} ms",
+    )
+    if settings.api_key and settings.api_secret:
+        run(
+            "Bybit private API",
+            chart_gateway.wallet_summary,
+            lambda value: f"Authenticated; equity {_number(value.get('equity')):.4f} USDT",
+        )
+    else:
+        checks.append({
+            "name": "Bybit private API",
+            "status": "skipped",
+            "latency_ms": 0,
+            "detail": "Demo API credentials are not configured",
+        })
+    failed = any(check["status"] == "failed" for check in checks)
+    skipped = any(check["status"] == "skipped" for check in checks)
+    return {
+        "status": "failed" if failed else "attention" if skipped else "healthy",
+        "environment": "demo" if settings.demo else "live",
+        "checked_at_ms": int(time.time() * 1000),
+        "bybit_server_time_ms": server_time,
+        "checks": checks,
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -241,6 +309,16 @@ def dashboard(_: str = Depends(require_auth)) -> FileResponse:
 @app.get("/audit", response_class=FileResponse)
 def audit_dashboard(_: str = Depends(require_auth)) -> FileResponse:
     return FileResponse(static_dir / "audit.html")
+
+
+@app.get("/{page}", response_class=FileResponse)
+def dashboard_page(page: str, _: str = Depends(require_auth)) -> FileResponse:
+    """Serve one authenticated app shell while preserving page-specific URLs."""
+    if page not in {
+        "overview", "structure", "signals", "positions", "performance", "journal", "system"
+    }:
+        raise HTTPException(status_code=404, detail="Dashboard page not found")
+    return FileResponse(static_dir / "index.html")
 
 
 def _audit_payload(
@@ -585,6 +663,11 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
             "order_retry_attempts": settings.order_retry_attempts,
         },
     }
+
+
+@app.post("/api/connection-test")
+def api_connection_test(_: str = Depends(require_auth)) -> dict[str, object]:
+    return _connection_test()
 
 
 @app.get("/api/chart/{symbol}")

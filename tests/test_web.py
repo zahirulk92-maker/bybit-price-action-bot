@@ -48,6 +48,14 @@ class ChartApiTests(unittest.TestCase):
         response = web.audit_dashboard("test")
         self.assertTrue(str(response.path).endswith("audit.html"))
 
+    def test_sidebar_pages_use_the_authenticated_app_shell(self):
+        for page in ("overview", "structure", "signals", "positions", "performance", "journal", "system"):
+            response = web.dashboard_page(page, "test")
+            self.assertTrue(str(response.path).endswith("index.html"))
+        with self.assertRaises(HTTPException) as raised:
+            web.dashboard_page("unknown", "test")
+        self.assertEqual(raised.exception.status_code, 404)
+
     def test_status_exposes_scanner_heartbeat(self):
         now = int(time.time() * 1000)
         heartbeat = {
@@ -130,7 +138,31 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual(result["wins"], 1)
         self.assertEqual(result["losses"], 1)
         self.assertEqual(result["win_rate"], 50.0)
+        self.assertAlmostEqual(result["gross_profit"], 0.095)
+        self.assertAlmostEqual(result["gross_loss"], 0.21)
+        self.assertAlmostEqual(result["profit_factor"], 0.095 / 0.21)
+        self.assertAlmostEqual(result["average_trade"], -0.0575)
+        self.assertEqual(result["best_trade"], 0.095)
+        self.assertEqual(result["worst_trade"], -0.21)
         self.assertEqual(result["rows"][0]["symbol"], "ETHUSDT")
+
+    def test_connection_test_is_read_only_and_reports_each_dependency(self):
+        configured = replace(web.settings, api_key="demo-key", api_secret="demo-secret")
+        now_ms = int(time.time() * 1000)
+        with patch.object(web, "settings", configured), patch.object(
+            web.store, "get_heartbeat", return_value={"status": "running"}
+        ), patch.object(
+            web.chart_gateway, "server_time_ms", return_value=now_ms
+        ), patch.object(
+            web.chart_gateway, "wallet_summary", return_value={"equity": 1004.25}
+        ):
+            result = web.api_connection_test("test")
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual([item["name"] for item in result["checks"]], [
+            "Local database", "Bybit public API", "Bybit private API",
+        ])
+        self.assertTrue(all(item["status"] == "passed" for item in result["checks"]))
+        self.assertIn("1004.2500 USDT", result["checks"][2]["detail"])
 
     def test_audit_combines_exchange_and_local_sources(self):
         configured = replace(web.settings, api_key="demo-key", api_secret="demo-secret")
