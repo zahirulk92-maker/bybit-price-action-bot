@@ -51,6 +51,13 @@ class Settings:
     telegram_chat_id: str = ""
     daily_report_hour: int = 23
     daily_report_minute: int = 55
+    v2_instrumentation_enabled: bool = True
+    v2_structure_mode: str = "off"
+    v2_universe_mode: str = "off"
+    v2_portfolio_mode: str = "off"
+    v2_playbook_mode: str = "off"
+    v2_thesis_mode: str = "off"
+    v2_management_mode: str = "off"
 
     @classmethod
     def from_env(cls, env_path: str = ".env") -> "Settings":
@@ -82,6 +89,13 @@ class Settings:
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
             daily_report_hour=int(os.getenv("DAILY_REPORT_HOUR", "23")),
             daily_report_minute=int(os.getenv("DAILY_REPORT_MINUTE", "55")),
+            v2_instrumentation_enabled=_bool("V2_INSTRUMENTATION_ENABLED", True),
+            v2_structure_mode=os.getenv("V2_STRUCTURE_MODE", "off").strip().lower(),
+            v2_universe_mode=os.getenv("V2_UNIVERSE_MODE", "off").strip().lower(),
+            v2_portfolio_mode=os.getenv("V2_PORTFOLIO_MODE", "off").strip().lower(),
+            v2_playbook_mode=os.getenv("V2_PLAYBOOK_MODE", "off").strip().lower(),
+            v2_thesis_mode=os.getenv("V2_THESIS_MODE", "off").strip().lower(),
+            v2_management_mode=os.getenv("V2_MANAGEMENT_MODE", "off").strip().lower(),
         )
         settings.validate()
         return settings
@@ -115,3 +129,24 @@ class Settings:
             raise ValueError("DAILY_REPORT_HOUR must be between 0 and 23")
         if not 0 <= self.daily_report_minute <= 59:
             raise ValueError("DAILY_REPORT_MINUTE must be between 0 and 59")
+        feature_modes = {
+            "V2_STRUCTURE_MODE": self.v2_structure_mode,
+            "V2_UNIVERSE_MODE": self.v2_universe_mode,
+            "V2_PORTFOLIO_MODE": self.v2_portfolio_mode,
+            "V2_PLAYBOOK_MODE": self.v2_playbook_mode,
+            "V2_THESIS_MODE": self.v2_thesis_mode,
+            "V2_MANAGEMENT_MODE": self.v2_management_mode,
+        }
+        for name, mode in feature_modes.items():
+            if mode not in {"off", "shadow"}:
+                raise ValueError(f"{name} must be off or shadow during ThesisEdge Phase 0")
+
+    def v2_feature_modes(self) -> dict[str, str]:
+        return {
+            "structure": self.v2_structure_mode,
+            "universe": self.v2_universe_mode,
+            "portfolio": self.v2_portfolio_mode,
+            "playbooks": self.v2_playbook_mode,
+            "thesis": self.v2_thesis_mode,
+            "management": self.v2_management_mode,
+        }

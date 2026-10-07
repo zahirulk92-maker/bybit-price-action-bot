@@ -6,7 +6,13 @@ The repository also includes an authenticated web dashboard with real Bybit cand
 
 ## V2 locked roadmap
 
-The approved V2 direction is documented as **ThesisEdge V2 — Context-Aware Price-Action Intelligence Engine**. Its locked architecture, safety boundaries, phased implementation gates, verification requirements, and change-control policy are in [`docs/THESISEDGE_V2_MASTER_PLAN.md`](docs/THESISEDGE_V2_MASTER_PLAN.md). V2 is planning-only until its phases are implemented and promoted through shadow testing; the document does not enable or modify current trading behaviour.
+The approved V2 direction is documented as **ThesisEdge V2 — Context-Aware Price-Action Intelligence Engine**. Its locked architecture, safety boundaries, phased implementation gates, verification requirements, and change-control policy are in [`docs/THESISEDGE_V2_MASTER_PLAN.md`](docs/THESISEDGE_V2_MASTER_PLAN.md). Implementation status is tracked separately in [`docs/THESISEDGE_V2_PROGRESS.md`](docs/THESISEDGE_V2_PROGRESS.md).
+
+Phase 0 adds append-only, deduplicated candle archives and versioned V1 decision records for deterministic replay. It does not change V1 signals, order sizing, entries, exits, or risk rules. All V2 modules accept only `off` or `shadow` mode and have no execution-authority state. Replay recent stored decisions locally without contacting Bybit:
+
+```powershell
+python -m price_action_bot --replay-v1 100
+```
 
 ## Strategy implemented
 

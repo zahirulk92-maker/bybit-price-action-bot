@@ -9,11 +9,12 @@ from datetime import datetime, timedelta, timezone
 from .analysis import detect_pattern, detect_trade_reversal, market_context, reward_risk, setup_checklist
 from .config import Settings
 from .exchange import BybitGateway
-from .models import ArmedSignal, SignalState, Trade
+from .models import ArmedSignal, Candle, MarketContext, SignalState, Trade
 from .notify import TelegramNotifier, format_alert
 from .risk import one_r_price, position_size
 from .store import Store
 from .universe import select_symbols
+from .v2_foundation import V2FeatureFlags, build_v1_decision_audit
 
 
 LOGGER = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class TradingEngine:
         self.settings = settings
         self.gateway = gateway
         self.store = store
+        self.v2_feature_flags = V2FeatureFlags(**settings.v2_feature_modes())
         self.symbols: list[str] = []
         self.last_universe_refresh_ms = 0
         self.last_processed_candle: dict[str, int] = {}
@@ -97,6 +99,52 @@ class TradingEngine:
             "blocked_symbols": [],
             "issues": [],
         }
+
+    def _record_phase0_baseline(
+        self,
+        symbol: str,
+        candles_5m: list[Candle],
+        candles_1h: list[Candle],
+        context: MarketContext,
+        decision: dict[str, object],
+        last_price: float,
+        entries_enabled: bool,
+    ) -> None:
+        """Record replay inputs without changing or authorizing the V1 decision."""
+        if not self.settings.v2_instrumentation_enabled:
+            return
+        try:
+            record = build_v1_decision_audit(
+                symbol=symbol,
+                candles_5m=candles_5m,
+                candles_1h=candles_1h,
+                context=context,
+                decision=decision,
+                policy_settings={
+                    "volume_multiplier": self.settings.volume_multiplier,
+                    "min_reward_risk": self.settings.min_reward_risk,
+                    "risk_per_trade": self.settings.risk_per_trade,
+                    "max_open_positions": self.settings.max_open_positions,
+                    "max_total_open_risk": self.settings.max_total_open_risk,
+                    "daily_max_net_loss": self.settings.daily_max_net_loss,
+                    "leverage": self.settings.leverage,
+                },
+                runtime_state={
+                    "entries_enabled": entries_enabled,
+                    "armed_before_evaluation": symbol in self.armed,
+                    "open_trade": symbol in self.trades,
+                    "last_price": last_price,
+                },
+                feature_flags=self.v2_feature_flags,
+            )
+            self.store.record_thesisedge_decision(record, candles_5m, candles_1h)
+        except Exception:
+            # Phase-0 observation must never alter V1 entry, management, or execution.
+            LOGGER.exception("ThesisEdge Phase-0 audit failed for %s", symbol)
+            try:
+                self.store.event("THESISEDGE_AUDIT_ERROR", symbol)
+            except Exception:
+                LOGGER.exception("Could not persist ThesisEdge audit failure for %s", symbol)
 
     def refresh_universe(self, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
@@ -299,6 +347,15 @@ class TradingEngine:
             context,
             self.settings.volume_multiplier,
             self.settings.min_reward_risk,
+        )
+        self._record_phase0_baseline(
+            symbol,
+            candles_5m,
+            candles_1h,
+            context,
+            decision,
+            last_price or latest.close,
+            entries_enabled,
         )
         if not entries_enabled:
             self.armed.pop(symbol, None)

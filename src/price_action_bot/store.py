@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .models import SignalState, Trade
+from .models import Candle, SignalState, Trade
 
 
 class Store:
@@ -43,6 +43,17 @@ class Store:
             if not self._postgres:
                 self.connection.commit()
             return result
+
+    def _executemany(self, statement: str, params: list[tuple[Any, ...]]) -> None:
+        if not params:
+            return
+        with self._lock:
+            if self._postgres:
+                with self.connection.cursor() as cursor:
+                    cursor.executemany(self._sql(statement), params)
+            else:
+                self.connection.executemany(statement, params)
+                self.connection.commit()
 
     def _init_schema(self) -> None:
         id_column = "BIGSERIAL PRIMARY KEY" if self._postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -90,6 +101,27 @@ class Store:
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_signal_journal_updated ON signal_journal(updated_at_ms)",
+            """
+            CREATE TABLE IF NOT EXISTS thesisedge_candles (
+                symbol TEXT NOT NULL, interval TEXT NOT NULL, timestamp_ms BIGINT NOT NULL,
+                open DOUBLE PRECISION NOT NULL, high DOUBLE PRECISION NOT NULL,
+                low DOUBLE PRECISION NOT NULL, close DOUBLE PRECISION NOT NULL,
+                volume DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY(symbol, interval, timestamp_ms)
+            )
+            """,
+            f"""
+            CREATE TABLE IF NOT EXISTS thesisedge_decisions (
+                id {id_column}, decision_id TEXT NOT NULL UNIQUE,
+                created_at_ms BIGINT NOT NULL, symbol TEXT NOT NULL,
+                candle_time_ms BIGINT NOT NULL, policy_version TEXT NOT NULL,
+                schema_version TEXT NOT NULL, plan_version TEXT NOT NULL,
+                stage TEXT NOT NULL, input_payload TEXT NOT NULL,
+                decision_payload TEXT NOT NULL, candle_references TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_thesisedge_decisions_symbol_time "
+            "ON thesisedge_decisions(symbol, candle_time_ms)",
         ]
         for statement in statements:
             self._execute(statement)
@@ -341,3 +373,109 @@ class Store:
             decision["updated_at_ms"] = item["updated_at_ms"]
             result.append(decision)
         return result
+
+    def archive_thesisedge_candles(
+        self, symbol: str, interval: str, candles: list[Candle]
+    ) -> None:
+        latest_row = self._execute(
+            "SELECT MAX(timestamp_ms) AS latest FROM thesisedge_candles "
+            "WHERE symbol=? AND interval=?",
+            (symbol, interval),
+            fetch="one",
+        )
+        latest = self._dict(latest_row).get("latest")
+        pending = [
+            candle for candle in candles
+            if latest is None or candle.timestamp_ms > int(latest)
+        ]
+        self._executemany(
+            """INSERT INTO thesisedge_candles
+               (symbol, interval, timestamp_ms, open, high, low, close, volume)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(symbol, interval, timestamp_ms) DO NOTHING""",
+            [
+                (
+                    symbol,
+                    interval,
+                    candle.timestamp_ms,
+                    candle.open,
+                    candle.high,
+                    candle.low,
+                    candle.close,
+                    candle.volume,
+                )
+                for candle in pending
+            ],
+        )
+
+    def record_thesisedge_decision(
+        self,
+        record: dict[str, object],
+        candles_5m: list[Candle],
+        candles_1h: list[Candle],
+    ) -> None:
+        """Persist a deduplicated, append-only Phase-0 replay record."""
+        symbol = str(record["symbol"])
+        self.archive_thesisedge_candles(symbol, "5m", candles_5m)
+        self.archive_thesisedge_candles(symbol, "1h", candles_1h)
+        self._execute(
+            """INSERT INTO thesisedge_decisions
+               (decision_id, created_at_ms, symbol, candle_time_ms, policy_version,
+                schema_version, plan_version, stage, input_payload,
+                decision_payload, candle_references)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(decision_id) DO NOTHING""",
+            (
+                str(record["decision_id"]),
+                int(time.time() * 1000),
+                symbol,
+                int(record["candle_time_ms"]),
+                str(record["policy_version"]),
+                str(record["schema_version"]),
+                str(record["plan_version"]),
+                str(record["stage"]),
+                json.dumps(record["input_payload"], sort_keys=True),
+                json.dumps(record["decision_payload"], sort_keys=True),
+                json.dumps(record["candle_references"], sort_keys=True),
+            ),
+        )
+
+    def thesisedge_decisions(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._execute(
+            """SELECT decision_id, created_at_ms, symbol, candle_time_ms,
+                      policy_version, schema_version, plan_version, stage,
+                      input_payload, decision_payload, candle_references
+               FROM thesisedge_decisions ORDER BY id DESC LIMIT ?""",
+            (limit,),
+            fetch="all",
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._dict(row)
+            for key in ("input_payload", "decision_payload", "candle_references"):
+                item[key] = json.loads(item[key])
+            result.append(item)
+        return result
+
+    def thesisedge_candles(
+        self, symbol: str, interval: str, from_ms: int, to_ms: int
+    ) -> list[Candle]:
+        rows = self._execute(
+            """SELECT timestamp_ms, open, high, low, close, volume
+               FROM thesisedge_candles
+               WHERE symbol=? AND interval=? AND timestamp_ms BETWEEN ? AND ?
+               ORDER BY timestamp_ms""",
+            (symbol, interval, from_ms, to_ms),
+            fetch="all",
+        )
+        return [
+            Candle(
+                int(self._dict(row)["timestamp_ms"]),
+                float(self._dict(row)["open"]),
+                float(self._dict(row)["high"]),
+                float(self._dict(row)["low"]),
+                float(self._dict(row)["close"]),
+                float(self._dict(row)["volume"]),
+            )
+            for row in rows
+        ]
