@@ -412,6 +412,24 @@ Deliverables:
 - Restart recovery of thesis and management state.
 - Market Shock Mode and stabilization rules.
 
+Locked recovery policy (`recovery-70-15-15.v1`):
+
+- The configured 1% risk is an all-in loss ceiling: price loss, entry/exit taker fees,
+  modeled slippage, and exchange quantity-step rounding are included before entry.
+- TP1 closes 70%. It is never below 1.5R and is extended when necessary so the
+  modeled net TP1 realization recovers the full initial 1R risk budget.
+- A setup is rejected when friction consumes more than 25% of the all-in risk,
+  when recovery would lie beyond TP2, or when the nearest confirmed 1h obstacle
+  comes before the recovery price.
+- Only an exchange-confirmed TP1 fill may move the remaining 30% stop to
+  break-even plus the modeled fee/slippage buffer.
+- TP2 is 2R and closes 15%. Only an exchange-confirmed TP2 fill may move the
+  final 15% runner stop to TP1.
+- The runner has no fixed TP3. Its stop advances only from confirmed closed 5m
+  swings, never from the still-forming candle, and never back through TP1.
+- The policy version and original stop/risk basis are persisted with the trade;
+  a restart cannot silently substitute another management policy.
+
 Exit gate:
 
 - A restart does not change the management policy of an open trade.
@@ -561,4 +579,3 @@ P0 Baseline + instrumentation
 ```
 
 No phase should be skipped to obtain more signals sooner.
-

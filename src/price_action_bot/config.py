@@ -58,6 +58,9 @@ class Settings:
     v2_playbook_mode: str = "off"
     v2_thesis_mode: str = "off"
     v2_management_mode: str = "off"
+    v2_taker_fee_rate: float = 0.00055
+    v2_slippage_rate: float = 0.00020
+    v2_max_friction_risk_fraction: float = 0.25
     structure_internal_swing_width: int = 2
     structure_major_swing_width: int = 5
     structure_atr_period: int = 14
@@ -106,6 +109,11 @@ class Settings:
             v2_playbook_mode=os.getenv("V2_PLAYBOOK_MODE", "off").strip().lower(),
             v2_thesis_mode=os.getenv("V2_THESIS_MODE", "off").strip().lower(),
             v2_management_mode=os.getenv("V2_MANAGEMENT_MODE", "off").strip().lower(),
+            v2_taker_fee_rate=float(os.getenv("V2_TAKER_FEE_RATE", "0.00055")),
+            v2_slippage_rate=float(os.getenv("V2_SLIPPAGE_RATE", "0.00020")),
+            v2_max_friction_risk_fraction=float(
+                os.getenv("V2_MAX_FRICTION_RISK_FRACTION", "0.25")
+            ),
             structure_internal_swing_width=int(os.getenv("STRUCTURE_INTERNAL_SWING_WIDTH", "2")),
             structure_major_swing_width=int(os.getenv("STRUCTURE_MAJOR_SWING_WIDTH", "5")),
             structure_atr_period=int(os.getenv("STRUCTURE_ATR_PERIOD", "14")),
@@ -160,7 +168,20 @@ class Settings:
         for name, mode in feature_modes.items():
             if mode not in {"off", "shadow"}:
                 raise ValueError(f"{name} must be off or shadow until explicitly promoted")
+        if min(self.v2_taker_fee_rate, self.v2_slippage_rate) < 0:
+            raise ValueError("V2 fee and slippage rates cannot be negative")
+        if not 0 <= self.v2_max_friction_risk_fraction < 1:
+            raise ValueError("V2_MAX_FRICTION_RISK_FRACTION must be between 0 and 1")
         self.structure_parameters().validate()
+
+    def recovery_policy(self):
+        from .management import RecoveryPolicy
+
+        return RecoveryPolicy(
+            taker_fee_rate=self.v2_taker_fee_rate,
+            slippage_rate=self.v2_slippage_rate,
+            max_friction_risk_fraction=self.v2_max_friction_risk_fraction,
+        )
 
     def v2_feature_modes(self) -> dict[str, str]:
         return {

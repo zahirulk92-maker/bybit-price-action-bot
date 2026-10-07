@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from .analysis import detect_pattern, detect_trade_reversal, market_context, reward_risk, setup_checklist
 from .config import Settings
 from .exchange import BybitGateway
+from .management import build_recovery_plan
 from .models import ArmedSignal, Candle, MarketContext, SignalState, Trade
 from .notify import TelegramNotifier, format_alert
 from .risk import one_r_price, position_size
@@ -624,6 +625,7 @@ class TradingEngine:
                 action="No order was sent",
             ))
             return
+        self._record_v2_management_shadow(symbol, armed, expected_entry)
         if not self.settings.enable_order_placement:
             self.store.event(
                 "ENTRY_SIGNAL_ONLY",
@@ -720,6 +722,43 @@ class TradingEngine:
             f"🧾 Entry order: {trade.order_id}\n"
             "🔁 Reversal protection: ACTIVE · Trade Audit: recorded"
         )
+
+    def _record_v2_management_shadow(
+        self, symbol: str, armed: ArmedSignal, expected_entry: float
+    ) -> None:
+        """Audit the locked recovery policy without changing V1 orders or management."""
+        if self.settings.v2_management_mode != "shadow":
+            return
+        try:
+            equity = self.gateway.equity_usdt()
+            rules = self.gateway.instrument_rules(symbol)
+            margin_qty_cap = equity * self.settings.leverage * 0.90 / expected_entry
+            plan = build_recovery_plan(
+                equity=equity,
+                risk_fraction=self.settings.risk_per_trade,
+                entry=expected_entry,
+                stop=armed.pattern.stop,
+                obstacle=armed.target,
+                side=armed.pattern.side,
+                qty_step=rules.qty_step,
+                min_qty=rules.min_qty,
+                max_qty=min(rules.max_market_qty, margin_qty_cap),
+                policy=self.settings.recovery_policy(),
+            )
+            self.store.event(
+                "V2_MANAGEMENT_SHADOW_ACCEPTED"
+                if plan.accepted
+                else "V2_MANAGEMENT_SHADOW_REJECTED",
+                symbol,
+                **plan.as_dict(),
+            )
+        except Exception as exc:
+            LOGGER.exception("V2 management shadow failed for %s", symbol)
+            self.store.event(
+                "V2_MANAGEMENT_SHADOW_ERROR",
+                symbol,
+                error_type=type(exc).__name__,
+            )
 
     def _manage_open_trades(self, prices: dict[str, float]) -> None:
         if not self.settings.enable_order_placement:

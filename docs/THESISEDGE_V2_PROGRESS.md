@@ -12,7 +12,7 @@ This file records implementation status only. The locked design remains in [`THE
 | Phase 3 — Portfolio intelligence | Not started | — |
 | Phase 4 — Context and playbooks | Not started | — |
 | Phase 5 — Thesis, conflicts, ranking | Not started | — |
-| Phase 6 — Management and recovery | Not started | — |
+| Phase 6 — Management and recovery | Policy prototype ready; execution not started | `recovery-70-15-15.v1` pure planner + optional shadow audit; no order authority |
 | Phase 7 — Shadow evaluation | Not started | — |
 | Phase 8 — Limited Demo authority | Not started | — |
 | Phase 9 — Live-readiness review | Not started | — |
