@@ -20,11 +20,11 @@ These are **not locked trading parameters**. Approval only confirms that the map
 
 ## What the overlay shows
 
-- Major swing markers are labelled `HH/LH swing` or `HL/LL swing` after their right-side confirmation bars close.
+- Major swing markers are labelled `HH/LH` or `HL/LL` after their right-side confirmation bars close.
 - BOS, CHoCH, sweep, and failed-break markers use the event candle timestamp.
-- Active zone boundaries are muted; flip-watch zones turn amber.
+- Active zone boundaries are muted; flip-watch zones turn amber. Nearby overlapping zones are visually clustered with an `×N` count while the raw zones remain in the snapshot.
 - Protected high/low lines are amber and dashed.
-- The `V2 Structure` checkbox removes every Phase 1 overlay without affecting the existing chart layers.
+- `Zones`, `Major swings`, and `Events` can be toggled independently without changing stored structure data.
 
 ## Human review sample
 
@@ -38,3 +38,15 @@ Open the dashboard, select `BTCUSDT`, `ETHUSDT`, and one active altcoin, then in
 6. The overlay is useful and not excessively noisy.
 
 Record the reviewed symbols, candle range, and any disputed marker before approving the Phase 1 exit gate. Phase 2 must not start while this review remains unchecked.
+
+## Review record — 2026-10-08 (Asia/Dhaka)
+
+- Reviewed `BTCUSDT`, `ETHUSDT`, and active altcoin `ZECUSDT` on the `1h` chart.
+- Confirmed swings remained fixed across refreshed BTC samples; automated prefix replay independently verifies the same non-repainting invariant.
+- BOS/CHoCH, sweep, and failed-break markers were visually attached to relevant confirmed structure areas.
+- The first sample exposed excessive nearby SWEEP labels and overlapping zone lines.
+- Display-only cleanup now keeps event priority `CHoCH > BOS > FAILED_BREAK > SWEEP`, collapses repeated nearby events, and clusters nearby zones. Raw events and zones remain unchanged for audit and replay.
+- Post-cleanup ETH and ZEC samples were readable, retained the important events, and displayed clustered zone counts.
+- Disputed markers remaining: none for the Phase 1 shadow-research gate.
+
+**Result:** Human chart review passed. The provisional parameters are approved for continued shadow research only; this approval grants no V2 order authority.

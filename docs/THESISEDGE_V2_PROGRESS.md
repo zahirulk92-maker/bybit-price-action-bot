@@ -7,7 +7,7 @@ This file records implementation status only. The locked design remains in [`THE
 | Phase | Status | Notes |
 |---|---|---|
 | Phase 0 — Baseline and instrumentation | Complete | Exit gate passed locally on 2026-10-07; 39/39 tests and deterministic replay checks passed |
-| Phase 1 — Market Structure Map | Human review pending | Shadow implementation and automated replay gates complete; provisional parameters require chart-sample approval |
+| Phase 1 — Market Structure Map | Complete | Exit gate passed on 2026-10-08 after BTC, ETH, and ZEC 1h chart review and overlay-noise cleanup; shadow only |
 | Phase 2 — Dynamic scanner funnel | Not started | — |
 | Phase 3 — Portfolio intelligence | Not started | — |
 | Phase 4 — Context and playbooks | Not started | — |
@@ -59,16 +59,19 @@ This file records implementation status only. The locked design remains in [`THE
 - [x] Dashboard has a removable `V2 Structure` debug layer.
 - [x] Automated prefix replay verifies that confirmed swings never move backward.
 - [x] Automated tests verify an unclosed right-side window cannot confirm a swing.
-- [ ] Human chart review approves the documented sample and provisional parameters.
+- [x] Human chart review approves the documented sample and provisional parameters.
 
 Review procedure and parameter contract: [`THESISEDGE_PHASE1_REVIEW.md`](THESISEDGE_PHASE1_REVIEW.md).
 
 ## Phase 1 automated verification record
 
 - Python compile check: passed
-- Full regression suite: `43/43` passed
+- Full regression suite at final review: `56/56` passed
 - Dashboard inline JavaScript syntax: passed
 - New replay checks: delayed confirmation, prefix stability, deterministic snapshot equality, persistence deduplication
 - V1 strategy/risk changes: none
 - Phase 1 order authority: none (`shadow` only)
-- Remaining exit gate: human chart review
+- Human chart sample: `BTCUSDT`, `ETHUSDT`, and `ZECUSDT` on 1h, reviewed 2026-10-08
+- Visual cleanup: nearby duplicate events and overlapping zones are clustered for display only; raw audit data is unchanged
+- Remaining exit gate: none
+- Next eligible phase: Phase 2 — Dynamic scanner funnel (not started)
