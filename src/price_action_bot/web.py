@@ -20,6 +20,7 @@ from .engine import TradingEngine
 from .exchange import BybitGateway
 from .notify import TelegramNotifier
 from .store import Store
+from .structure import build_structure_map
 
 
 settings = Settings.from_env()
@@ -608,12 +609,21 @@ def api_chart(
             return cached[1]
     candles = chart_gateway.candles(symbol, interval, limit)
     market = markets[symbol]
+    structure = None
+    if settings.v2_structure_mode == "shadow":
+        try:
+            structure_candles = candles if interval == "60" else chart_gateway.candles(symbol, "60", 200)
+            structure = build_structure_map(structure_candles, settings.structure_parameters())
+            structure["mode"] = "shadow"
+        except Exception as exc:
+            structure = {"mode": "shadow", "data_quality": "error", "error": str(exc)}
     payload: dict[str, object] = {
         "symbol": symbol,
         "interval": interval,
         "bias": market["bias"],
         "support": market["support"],
         "resistance": market["resistance"],
+        "structure": structure,
         "candles": [
             {
                 "time": candle.timestamp_ms,

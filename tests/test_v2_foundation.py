@@ -48,7 +48,11 @@ class ThesisEdgeFoundationTests(unittest.TestCase):
     def test_phase0_flags_have_no_execution_authority(self):
         settings = Settings("", "")
         self.assertTrue(settings.v2_instrumentation_enabled)
-        self.assertEqual(set(settings.v2_feature_modes().values()), {"off"})
+        self.assertEqual(settings.v2_feature_modes()["structure"], "shadow")
+        self.assertEqual(
+            {mode for name, mode in settings.v2_feature_modes().items() if name != "structure"},
+            {"off"},
+        )
         flags = V2FeatureFlags(
             structure="shadow",
             universe="shadow",

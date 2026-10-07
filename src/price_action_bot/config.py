@@ -52,12 +52,22 @@ class Settings:
     daily_report_hour: int = 23
     daily_report_minute: int = 55
     v2_instrumentation_enabled: bool = True
-    v2_structure_mode: str = "off"
+    v2_structure_mode: str = "shadow"
     v2_universe_mode: str = "off"
     v2_portfolio_mode: str = "off"
     v2_playbook_mode: str = "off"
     v2_thesis_mode: str = "off"
     v2_management_mode: str = "off"
+    structure_internal_swing_width: int = 2
+    structure_major_swing_width: int = 5
+    structure_atr_period: int = 14
+    structure_zone_atr_multiplier: float = 0.15
+    structure_zone_min_price_fraction: float = 0.0005
+    structure_weakened_after_touches: int = 2
+    structure_break_buffer_atr: float = 0.0
+    structure_invalidation_buffer_atr: float = 0.50
+    structure_failed_break_window: int = 3
+    structure_max_debug_zones: int = 12
 
     @classmethod
     def from_env(cls, env_path: str = ".env") -> "Settings":
@@ -90,12 +100,22 @@ class Settings:
             daily_report_hour=int(os.getenv("DAILY_REPORT_HOUR", "23")),
             daily_report_minute=int(os.getenv("DAILY_REPORT_MINUTE", "55")),
             v2_instrumentation_enabled=_bool("V2_INSTRUMENTATION_ENABLED", True),
-            v2_structure_mode=os.getenv("V2_STRUCTURE_MODE", "off").strip().lower(),
+            v2_structure_mode=os.getenv("V2_STRUCTURE_MODE", "shadow").strip().lower(),
             v2_universe_mode=os.getenv("V2_UNIVERSE_MODE", "off").strip().lower(),
             v2_portfolio_mode=os.getenv("V2_PORTFOLIO_MODE", "off").strip().lower(),
             v2_playbook_mode=os.getenv("V2_PLAYBOOK_MODE", "off").strip().lower(),
             v2_thesis_mode=os.getenv("V2_THESIS_MODE", "off").strip().lower(),
             v2_management_mode=os.getenv("V2_MANAGEMENT_MODE", "off").strip().lower(),
+            structure_internal_swing_width=int(os.getenv("STRUCTURE_INTERNAL_SWING_WIDTH", "2")),
+            structure_major_swing_width=int(os.getenv("STRUCTURE_MAJOR_SWING_WIDTH", "5")),
+            structure_atr_period=int(os.getenv("STRUCTURE_ATR_PERIOD", "14")),
+            structure_zone_atr_multiplier=float(os.getenv("STRUCTURE_ZONE_ATR_MULTIPLIER", "0.15")),
+            structure_zone_min_price_fraction=float(os.getenv("STRUCTURE_ZONE_MIN_PRICE_FRACTION", "0.0005")),
+            structure_weakened_after_touches=int(os.getenv("STRUCTURE_WEAKENED_AFTER_TOUCHES", "2")),
+            structure_break_buffer_atr=float(os.getenv("STRUCTURE_BREAK_BUFFER_ATR", "0.0")),
+            structure_invalidation_buffer_atr=float(os.getenv("STRUCTURE_INVALIDATION_BUFFER_ATR", "0.50")),
+            structure_failed_break_window=int(os.getenv("STRUCTURE_FAILED_BREAK_WINDOW", "3")),
+            structure_max_debug_zones=int(os.getenv("STRUCTURE_MAX_DEBUG_ZONES", "12")),
         )
         settings.validate()
         return settings
@@ -139,7 +159,8 @@ class Settings:
         }
         for name, mode in feature_modes.items():
             if mode not in {"off", "shadow"}:
-                raise ValueError(f"{name} must be off or shadow during ThesisEdge Phase 0")
+                raise ValueError(f"{name} must be off or shadow until explicitly promoted")
+        self.structure_parameters().validate()
 
     def v2_feature_modes(self) -> dict[str, str]:
         return {
@@ -150,3 +171,19 @@ class Settings:
             "thesis": self.v2_thesis_mode,
             "management": self.v2_management_mode,
         }
+
+    def structure_parameters(self):
+        from .structure import StructureParameters
+
+        return StructureParameters(
+            internal_swing_width=self.structure_internal_swing_width,
+            major_swing_width=self.structure_major_swing_width,
+            atr_period=self.structure_atr_period,
+            zone_atr_multiplier=self.structure_zone_atr_multiplier,
+            zone_min_price_fraction=self.structure_zone_min_price_fraction,
+            weakened_after_touches=self.structure_weakened_after_touches,
+            break_buffer_atr=self.structure_break_buffer_atr,
+            invalidation_buffer_atr=self.structure_invalidation_buffer_atr,
+            failed_break_window=self.structure_failed_break_window,
+            max_debug_zones=self.structure_max_debug_zones,
+        )

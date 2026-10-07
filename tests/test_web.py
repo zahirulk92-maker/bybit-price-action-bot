@@ -36,6 +36,8 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual(result["symbol"], "BTCUSDT")
         self.assertEqual(result["support"], 95.0)
         self.assertEqual(result["candles"][0]["close"], 102)
+        self.assertEqual(result["structure"]["mode"], "shadow")
+        self.assertEqual(result["structure"]["data_quality"], "insufficient")
 
     def test_chart_rejects_unknown_interval(self):
         with self.assertRaises(HTTPException) as raised:

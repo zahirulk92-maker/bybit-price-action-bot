@@ -13,6 +13,7 @@ from .models import ArmedSignal, Candle, MarketContext, SignalState, Trade
 from .notify import TelegramNotifier, format_alert
 from .risk import one_r_price, position_size
 from .store import Store
+from .structure import build_structure_map
 from .universe import select_symbols
 from .v2_foundation import V2FeatureFlags, build_v1_decision_audit
 
@@ -145,6 +146,22 @@ class TradingEngine:
                 self.store.event("THESISEDGE_AUDIT_ERROR", symbol)
             except Exception:
                 LOGGER.exception("Could not persist ThesisEdge audit failure for %s", symbol)
+
+    def _record_phase1_structure(self, symbol: str, candles_1h: list[Candle]) -> None:
+        """Run the Phase-1 structure engine in observation-only shadow mode."""
+        if self.settings.v2_structure_mode != "shadow":
+            return
+        try:
+            snapshot = build_structure_map(candles_1h, self.settings.structure_parameters())
+            self.store.archive_thesisedge_candles(symbol, "1h", candles_1h)
+            self.store.record_thesisedge_structure(symbol, snapshot, mode="shadow")
+        except Exception:
+            # Structure output has no authority over V1 decisions or orders.
+            LOGGER.exception("ThesisEdge Phase-1 structure audit failed for %s", symbol)
+            try:
+                self.store.event("THESISEDGE_STRUCTURE_ERROR", symbol)
+            except Exception:
+                LOGGER.exception("Could not persist structure failure for %s", symbol)
 
     def refresh_universe(self, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
@@ -324,6 +341,7 @@ class TradingEngine:
         self.last_processed_candle[symbol] = latest.timestamp_ms
 
         candles_1h = self.gateway.candles(symbol, "60", 200)
+        self._record_phase1_structure(symbol, candles_1h)
         context = market_context(candles_1h)
         LOGGER.info(
             "%s state=%s bias=%s close=%.8g",
