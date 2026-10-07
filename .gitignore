@@ -9,3 +9,13 @@ __pycache__/
 .pytest_cache/
 local secrate.txt
 local secrate/
+
+.env
+.venv/
+local_secrate/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+*.db-shm
+*.db-wal

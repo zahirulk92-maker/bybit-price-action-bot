@@ -1,0 +1,101 @@
+আমি roadmap-টা মোট ১০টি phase-এ ভাগ করেছি: Phase 0 থেকে Phase 9।
+Phase 0 বাদ দিয়ে গুনলে feature-development phase ৯টি। কিন্তু কাজ অবশ্যই Phase 0 দিয়ে শুরু হবে, সরাসরি intelligent analysis বানানো শুরু করব না।
+Phase 0 — Baseline Freeze & Instrumentation
+এটা foundation phase। উদ্দেশ্য হলো বর্তমান V1 bot-এর behaviour নিরাপদ রাখা এবং পরে V1 বনাম V2 তুলনা করার ব্যবস্থা করা।
+এখানে থাকবে:
+- বর্তমান V1 strategy/config version lock
+- প্রতিটি decision-এর policy_version
+- Market snapshot সংরক্ষণ
+- Context, structure, thesis, conflict ও outcome-এর data schema
+- V2 feature flags—default OFF/SHADOW
+- Historical candle replay system
+- একই data দিলে একই decision আসে কি না—deterministic test
+- নিশ্চিত করা যে V2 module order open/close করতে পারছে না
+Phase 0 complete হওয়ার condition:
+- বর্তমান 36টি test pass করবে
+- V1 trading behaviour পরিবর্তিত হবে না
+- Stored data দিয়ে decision replay করা যাবে
+- V2 সম্পূর্ণ shadow-only থাকবে
+Phase 1 — Non-Repainting Market Structure Map
+এটাই V2 intelligence-এর প্রথম আসল অংশ।
+Phase 1-এ bot-কে entry শেখাব না। আগে chart-এর structure objectively পড়তে শেখাব।
+১. Swing hierarchy
+Bot আলাদা করবে:
+- Major swing high/low
+- Internal swing high/low
+- Confirmed বনাম developing swing
+- Protected high/low
+- কোনটা market noise
+শুধু closed candle দিয়ে swing confirm হবে।
+২. Market structure
+Bot identify করবে:
+- Higher High / Higher Low
+- Lower High / Lower Low
+- Range
+- BOS — Break of Structure
+- CHoCH — Change of Character
+- Neutral/unclear structure
+Bullish এবং bearish logic symmetric হবে।
+৩. Support/Resistance zone lifecycle
+Level শুধু একটি line হবে না; price range/zone হবে এবং status থাকবে:
+FRESH
+TESTED
+WEAKENED
+BROKEN
+FLIP-WATCH
+INVALID
+সঙ্গে থাকবে:
+- Zone কত পুরোনো
+- কতবার touch হয়েছে
+- কোন swing থেকে তৈরি
+- Zone width
+- কখন invalidate হবে
+- Broken support resistance হিসেবে কাজ করছে কি না
+৪. Liquidity events
+Detect করবে:
+- Previous high sweep
+- Previous low sweep
+- False breakout
+- Breakout and reclaim
+- Failed reclaim
+শুধু wick দেখেই sweep ঘোষণা করবে না; close এবং পরবর্তী confirmation বিবেচনা করবে।
+৫. No-repaint protection
+প্রতিটি structure object-এর সঙ্গে থাকবে:
+- Source candles
+- Confirmation candle
+- Confirmation timestamp
+- কোন data দেখে decision হয়েছিল
+Future candle আসার পরে অতীতের confirmed structure silently বদলাতে পারবে না।
+৬. Visual verification
+Dashboard chart-এ debug mode থাকবে:
+- Major/internal swings
+- BOS/CHoCH
+- Fresh/tested/broken zones
+- Liquidity sweep markers
+- Confirmation time
+এগুলো প্রথমে trading signal হবে না—আমরা chart দেখে যাচাই করব analysis মানুষের চোখের সঙ্গে যৌক্তিকভাবে মিলছে কি না।
+৭. Phase 1 testing
+- Closed-candle tests
+- No-look-ahead tests
+- No-repaint replay tests
+- Bullish/bearish symmetry
+- Range ও noisy market cases
+- Broken support → resistance flip
+- Restart-এর পরে একই structure restore
+- Manually reviewed chart samples
+Phase 1 complete হবে যখন:
+- Future candle দিয়ে পুরোনো swing repaint হবে না
+- Support/resistance অকারণে price-এর সঙ্গে move করবে না
+- Range/trend/noise আলাদা করার structure data পাওয়া যাবে
+- একই historical data replay করলে একই structure তৈরি হবে
+- আমরা visual sample review করে definitions approve করব
+কেন আগে Phase 1?
+Structure ভুল হলে পরের সবকিছু ভুল হবে:
+ভুল structure
+→ ভুল zone
+→ ভুল regime
+→ ভুল playbook
+→ ভুল thesis
+→ ভুল trade
+তাই Phase 1-এ কোনো entry frequency বাড়ানোর চেষ্টা থাকবে না। লক্ষ্য হবে bot সত্যিই market map করতে পারছে কি না।
+এরপর Phase 2-এ যাব: Dynamic Universe & Scanner Funnel—fixed 10 symbol থেকে বড় market scan করে best candidates বাছাই করা।
