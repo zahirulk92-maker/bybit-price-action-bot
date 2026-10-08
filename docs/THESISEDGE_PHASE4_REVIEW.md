@@ -38,3 +38,7 @@ Every match includes required context, direction, machine reason code, and a clo
 - [ ] Confirm dashboard context/location/playbook labels against the 1h chart.
 
 Phase 4 remains under shadow review until the live examples are approved.
+
+## First live review note
+
+The first System snapshot correctly rejected healthy mid-range contexts and matched a bullish NEARUSDT breakout retest. It also exposed an invalidation-direction defect in the initial shadow output: a bullish former-resistance retest displayed invalidation above the zone. The rule was corrected and replay-locked so bullish retests invalidate below the flipped zone lower bound, while bearish retests invalidate above the flipped zone upper bound. A fresh runtime snapshot is required before approval.

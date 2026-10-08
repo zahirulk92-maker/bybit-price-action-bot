@@ -163,10 +163,22 @@ def build_playbook_context(
     correct_flip = (break_direction == "bullish" and zone_kind == "resistance") or (break_direction == "bearish" and zone_kind == "support")
     breakout_match = enough and location == "breakout_retest" and recent_break and correct_flip
     breakout_direction = "Buy" if break_direction == "bullish" else "Sell" if break_direction == "bearish" else "Unknown"
+    breakout_invalidation = None
+    if breakout_match and active_zone:
+        if break_direction == "bullish":
+            breakout_invalidation = {
+                "type": "close_beyond_flipped_zone", "side": "below",
+                "price": float(active_zone["lower"]),
+            }
+        else:
+            breakout_invalidation = {
+                "type": "close_beyond_flipped_zone", "side": "above",
+                "price": float(active_zone["upper"]),
+            }
     breakout = _result(
         "BREAKOUT_RETEST", breakout_match, breakout_direction,
         ["recent_confirmed_break", "location=broken_level_retest", "flip_zone=holding"],
-        zone_invalidation if breakout_match else None,
+        breakout_invalidation,
         ["BREAKOUT_RETEST_MATCHED"] if breakout_match else ["BREAKOUT_RETEST_NOT_MATCHED"],
     )
 

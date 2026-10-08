@@ -65,8 +65,12 @@ class PlaybookTests(unittest.TestCase):
         bearish = self.match(structure("LH_LL", "support", "flip-watch", "bearish"))
         self.assertEqual(bullish["selected_playbook"]["playbook"], "BREAKOUT_RETEST")
         self.assertEqual(bullish["selected_playbook"]["direction"], "Buy")
+        self.assertEqual(bullish["selected_playbook"]["invalidation"]["side"], "below")
+        self.assertEqual(bullish["selected_playbook"]["invalidation"]["price"], 99.5)
         self.assertEqual(bearish["selected_playbook"]["playbook"], "BREAKOUT_RETEST")
         self.assertEqual(bearish["selected_playbook"]["direction"], "Sell")
+        self.assertEqual(bearish["selected_playbook"]["invalidation"]["side"], "above")
+        self.assertEqual(bearish["selected_playbook"]["invalidation"]["price"], 100.5)
 
     def test_mid_range_cannot_masquerade_as_setup(self):
         market_structure = structure("range", "support")
