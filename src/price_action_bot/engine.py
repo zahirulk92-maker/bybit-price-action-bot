@@ -792,13 +792,19 @@ class TradingEngine:
             # Re-check the exchange immediately before placing an order so a
             # manually opened position cannot be duplicated between scans.
             self._reconcile_exchange_positions(force=True)
-        if symbol in self.blocked_symbols:
-            self.store.event("ENTRY_BLOCKED_RECONCILIATION", symbol)
+        if self.blocked_symbols:
+            blocked_symbols = sorted(self.blocked_symbols)
+            self.store.event(
+                "ENTRY_BLOCKED_RECONCILIATION",
+                symbol,
+                blocked_symbols=blocked_symbols,
+            )
             self.notifier.send(format_alert(
                 "⛔ ENTRY BLOCKED",
                 symbol=symbol,
                 status="EXCHANGE RECONCILIATION",
-                action="Resolve the Bybit/local position mismatch before retrying",
+                facts=[("🚨 Untracked / mismatched", ", ".join(blocked_symbols))],
+                action="Resolve every Bybit/local position mismatch before retrying",
             ))
             return
         if len(self.trades) >= self.settings.max_open_positions:

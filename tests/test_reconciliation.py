@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 from price_action_bot.config import Settings
 from price_action_bot.engine import TradingEngine
-from price_action_bot.models import Trade
+from price_action_bot.models import ArmedSignal, PatternSignal, Trade
 
 
 class ReconciliationTests(unittest.TestCase):
@@ -47,6 +47,37 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(self.engine.blocked_symbols, {"ETHUSDT"})
         self.assertEqual(self.engine.reconciliation["status"], "attention")
         self.store.save_trade.assert_called_once_with(trade)
+
+    def test_any_unknown_exchange_position_blocks_every_new_entry(self):
+        self.gateway.open_positions.return_value = [
+            {"symbol": "HYPEUSDT", "side": "Sell", "size": "42.36", "stopLoss": ""},
+        ]
+        pattern = PatternSignal(
+            name="bullish_engulfing",
+            side="Buy",
+            timestamp_ms=1,
+            trigger=100.0,
+            stop=95.0,
+            pattern_high=100.0,
+            pattern_low=95.0,
+            volume_ratio=1.5,
+        )
+        armed = ArmedSignal(pattern=pattern, armed_at_ms=1, expires_at_ms=2, target=115.0)
+        self.engine._check_daily_loss_limit = MagicMock(
+            return_value={"available": True, "breached": False}
+        )
+
+        self.engine._enter("BTCUSDT", armed, 100.0)
+
+        self.gateway.place_market_order.assert_not_called()
+        self.gateway.equity_usdt.assert_not_called()
+        matching_events = [
+            call for call in self.store.event.call_args_list
+            if call.args and call.args[0] == "ENTRY_BLOCKED_RECONCILIATION"
+        ]
+        self.assertEqual(len(matching_events), 1)
+        self.assertEqual(matching_events[0].args[1], "BTCUSDT")
+        self.assertEqual(matching_events[0].kwargs["blocked_symbols"], ["HYPEUSDT"])
 
     def test_reconcile_closes_stale_local_trade(self):
         trade = self.trade()
