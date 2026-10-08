@@ -50,6 +50,7 @@ set "DAILY_MAX_NET_LOSS=0.05"
 set "ORDER_RETRY_ATTEMPTS=3"
 set "V2_UNIVERSE_MODE=shadow"
 set "V2_PORTFOLIO_MODE=shadow"
+set "V2_PLAYBOOK_MODE=shadow"
 set "PYTHONUTF8=1"
 
 echo.
@@ -60,6 +61,7 @@ echo [RISK] Per trade: 1%% ^| Max daily net loss: 5%% ^| Max open risk: 3%%
 echo [EXECUTION] Safe retries: 3 with duplicate-order protection
 echo [V2] Dynamic scanner funnel: SHADOW ONLY ^| no order authority
 echo [V2] Portfolio correlation map: SHADOW ONLY ^| no risk authority
+echo [V2] Regime and three playbooks: SHADOW ONLY ^| no signal authority
 echo [MODE] Live trading: FORCED OFF
 echo [DASHBOARD] http://127.0.0.1:8000
 echo [STOP] Press Ctrl+C in this window.

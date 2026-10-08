@@ -86,6 +86,9 @@ class ChartApiTests(unittest.TestCase):
         self.assertIn("btc_correlation", dashboard)
         self.assertIn("btc_beta", dashboard)
         self.assertIn("strongest → weakest", dashboard)
+        self.assertIn('id="playbookRows"', dashboard)
+        self.assertIn("function renderPlaybooks", dashboard)
+        self.assertIn("renderPlaybooks(data.v2_playbooks||{})", dashboard)
 
     def test_structure_overlay_keeps_raw_data_but_deduplicates_the_display(self):
         dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")

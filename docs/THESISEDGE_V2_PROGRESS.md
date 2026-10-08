@@ -9,8 +9,8 @@ This file records implementation status only. The locked design remains in [`THE
 | Phase 0 — Baseline and instrumentation | Complete | Exit gate passed locally on 2026-10-07; 39/39 tests and deterministic replay checks passed |
 | Phase 1 — Market Structure Map | Complete | Exit gate passed on 2026-10-08 after BTC, ETH, and ZEC 1h chart review and overlay-noise cleanup; shadow only |
 | Phase 2 — Dynamic scanner funnel | Complete | Exit gate passed on 2026-10-08 after two live Demo snapshots, stable candidate pool, dynamic deep/action pools, and in-limit latency; shadow only |
-| Phase 3 — Portfolio correlation and relative strength | Implementation complete; shadow review pending | Closed-1h correlation, BTC beta, confidence, clusters, relative strength, effective exposure, and highest-quality-per-cluster shadow selection; no risk or order authority |
-| Phase 4 — Context and playbooks | Not started | — |
+| Phase 3 — Portfolio correlation and relative strength | Complete | Exit approved on 2026-10-08 after deterministic shared-exposure replay and two healthy Demo snapshots; shadow only |
+| Phase 4 — Regime, location, and three playbooks | Implementation complete; shadow review pending | Context contract plus symmetric Trend Pullback, Range Reversal, and Breakout Retest matchers; no signal, risk, or order authority |
 | Phase 5 — Thesis, conflicts, ranking | Not started | — |
 | Phase 6 — Management and recovery | Policy prototype ready; execution not started | `recovery-70-15-15.v1` pure planner + optional shadow audit; no order authority |
 | Phase 7 — Shadow evaluation | Not started | — |
@@ -131,4 +131,33 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE3_REVIEW.md`](THESISE
 - Failure isolation: one symbol history timeout preserves and labels the remaining partial snapshot
 - V1 strategy/risk changes: none
 - Phase 3 risk or order authority: none (`shadow` only)
-- Remaining exit gate: two-snapshot live Demo review
+- Live Demo review: two healthy 7-symbol snapshots, no missing/error data, plausible `0.80–0.89` correlated cluster, relative-strength ordering, and 1,221 ms then 963 ms latency
+- Exit approval: user explicitly started Phase 4 on 2026-10-08
+- Remaining exit gate: none
+
+## Phase 4 implementation checklist
+
+- [x] Persist regime, bias, location, volatility, data quality, zone, ATR, and break context.
+- [x] Implement symmetric bullish/bearish Trend Pullback matcher.
+- [x] Implement symmetric bullish/bearish Range Reversal matcher.
+- [x] Implement symmetric bullish/bearish Breakout Retest matcher.
+- [x] Include required context, direction, reason code, and invalidation in every match.
+- [x] Return explicit `UNKNOWN` and `NO_MATCHING_PLAYBOOK` states.
+- [x] Prevent mid-range context from masquerading as an edge setup.
+- [x] Persist deduplicated snapshots and expose current symbol contexts on System.
+- [x] Preserve zero signal, risk, management, and order authority.
+- [ ] Review live Demo trend, range, and breakout-retest contexts against charts.
+
+Review procedure and contract: [`THESISEDGE_PHASE4_REVIEW.md`](THESISEDGE_PHASE4_REVIEW.md).
+
+## Phase 4 automated verification record
+
+- Python compile check: passed
+- Dashboard inline JavaScript syntax: passed
+- Full regression suite after implementation: `84/84` passed
+- Replay coverage: bullish and bearish cases for all three playbooks
+- Safety replay: mid-range is no-match; insufficient data is unknown
+- Persistence: latest-per-symbol snapshots are append-only and deduplicated
+- V1 strategy/risk changes: none
+- Phase 4 signal, risk, management, or order authority: none (`shadow` only)
+- Remaining exit gate: live Demo chart review

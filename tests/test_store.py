@@ -124,6 +124,25 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(saved["risk_increase_authority"])
         self.assertEqual(dict(count)["total"], 1)
 
+    def test_phase4_playbook_latest_per_symbol_is_deduplicated(self):
+        base = {
+            "snapshot_id": "playbook-btc-1", "symbol": "BTCUSDT",
+            "computed_at_ms": 123456, "schema_version": "thesisedge.phase4.v1",
+            "status": "NO_MATCHING_PLAYBOOK", "v2_execution_authority": False,
+        }
+        self.store.record_thesisedge_playbook(base)
+        self.store.record_thesisedge_playbook(base)
+        later = {**base, "snapshot_id": "playbook-btc-2", "computed_at_ms": 123457, "status": "MATCHED"}
+        eth = {**base, "snapshot_id": "playbook-eth-1", "symbol": "ETHUSDT"}
+        self.store.record_thesisedge_playbook(later)
+        self.store.record_thesisedge_playbook(eth)
+
+        saved = self.store.latest_thesisedge_playbooks()
+
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(next(row for row in saved if row["symbol"] == "BTCUSDT")["status"], "MATCHED")
+        self.assertTrue(all(row["mode"] == "shadow" for row in saved))
+
 
 if __name__ == "__main__":
     unittest.main()

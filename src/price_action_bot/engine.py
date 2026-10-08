@@ -12,6 +12,7 @@ from .exchange import BybitGateway
 from .management import build_recovery_plan
 from .models import ArmedSignal, Candle, MarketContext, SignalState, Trade
 from .notify import TelegramNotifier, format_alert
+from .playbooks import build_playbook_context
 from .portfolio import build_portfolio_map
 from .risk import one_r_price, position_size
 from .store import Store
@@ -156,14 +157,15 @@ class TradingEngine:
             except Exception:
                 LOGGER.exception("Could not persist ThesisEdge audit failure for %s", symbol)
 
-    def _record_phase1_structure(self, symbol: str, candles_1h: list[Candle]) -> None:
+    def _record_phase1_structure(self, symbol: str, candles_1h: list[Candle]) -> dict[str, object] | None:
         """Run the Phase-1 structure engine in observation-only shadow mode."""
         if self.settings.v2_structure_mode != "shadow":
-            return
+            return None
         try:
             snapshot = build_structure_map(candles_1h, self.settings.structure_parameters())
             self.store.archive_thesisedge_candles(symbol, "1h", candles_1h)
             self.store.record_thesisedge_structure(symbol, snapshot, mode="shadow")
+            return snapshot
         except Exception:
             # Structure output has no authority over V1 decisions or orders.
             LOGGER.exception("ThesisEdge Phase-1 structure audit failed for %s", symbol)
@@ -171,6 +173,32 @@ class TradingEngine:
                 self.store.event("THESISEDGE_STRUCTURE_ERROR", symbol)
             except Exception:
                 LOGGER.exception("Could not persist structure failure for %s", symbol)
+            return None
+
+    def _record_phase4_playbook(
+        self, symbol: str, candles_1h: list[Candle], candles_5m: list[Candle],
+        structure_snapshot: dict[str, object] | None,
+    ) -> None:
+        if self.settings.v2_playbook_mode != "shadow" or not structure_snapshot:
+            return
+        try:
+            snapshot = build_playbook_context(
+                symbol, candles_1h, candles_5m, structure_snapshot,
+                self.settings.playbook_parameters(),
+            )
+            self.store.record_thesisedge_playbook(snapshot, mode="shadow")
+            self.store.event(
+                "THESISEDGE_PLAYBOOK_CONTEXT_UPDATED", symbol,
+                status=snapshot["status"],
+                playbook=(snapshot.get("selected_playbook") or {}).get("playbook", ""),
+                reason_code=snapshot["reason_code"],
+            )
+        except Exception:
+            LOGGER.exception("ThesisEdge Phase-4 playbook context failed for %s", symbol)
+            try:
+                self.store.event("THESISEDGE_PLAYBOOK_CONTEXT_ERROR", symbol)
+            except Exception:
+                LOGGER.exception("Could not persist playbook failure for %s", symbol)
 
     def _record_phase3_portfolio(
         self, scanner_snapshot: dict[str, object], now_ms: int
@@ -510,7 +538,8 @@ class TradingEngine:
         self.last_processed_candle[symbol] = latest.timestamp_ms
 
         candles_1h = self.gateway.candles(symbol, "60", 200)
-        self._record_phase1_structure(symbol, candles_1h)
+        structure_snapshot = self._record_phase1_structure(symbol, candles_1h)
+        self._record_phase4_playbook(symbol, candles_1h, candles_5m, structure_snapshot)
         context = market_context(candles_1h)
         LOGGER.info(
             "%s state=%s bias=%s close=%.8g",

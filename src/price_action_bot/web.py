@@ -712,6 +712,10 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
             "opportunity_selection": [],
             "data_errors": {},
         }
+    v2_playbooks = (
+        store.latest_thesisedge_playbooks()
+        if settings.v2_playbook_mode == "shadow" else []
+    )
     return {
         "environment": "demo" if settings.demo else "live",
         "execution": "orders" if settings.enable_order_placement else "signals",
@@ -739,6 +743,12 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         "signal_journal": signal_journal,
         "v2_scanner": v2_scanner,
         "v2_portfolio": v2_portfolio,
+        "v2_playbooks": {
+            "mode": settings.v2_playbook_mode,
+            "status": "healthy" if v2_playbooks else "waiting" if settings.v2_playbook_mode == "shadow" else "off",
+            "snapshots": v2_playbooks,
+            "v2_execution_authority": False,
+        },
         "open_trades": trades,
         "events": store.recent_events(40),
         "strategy": {

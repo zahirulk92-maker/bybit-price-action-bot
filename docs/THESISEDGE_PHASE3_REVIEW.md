@@ -32,13 +32,13 @@ The 15-minute portfolio refresh deliberately analyzes the Phase 2 deep pool plus
 
 Restart with `start.bat`, open **System → V2 Portfolio Map**, and collect at least two snapshots separated by the configured 15-minute refresh. Before Phase 3 can be locked, verify:
 
-- [ ] BTC beta/correlation and confidence labels are plausible for the displayed symbols.
-- [ ] Correlated assets appear together while unrelated or insufficient-data symbols are not presented as certain.
-- [ ] Relative-strength ordering is plausible inside at least one multi-symbol cluster.
-- [ ] Any simultaneous open/armed same-direction correlated theses appear as shared exposure, or the empty state is truthful if none exist.
-- [ ] Only one healthy same-direction opportunity per cluster is selected; peers are queued.
-- [ ] Selected risk is never above 1%, queued/unresolved risk is 0%, and the panel states shadow/no authority.
-- [ ] Refresh latency and API usage remain operationally acceptable for two consecutive snapshots.
-- [ ] No new engine-cycle failure is caused by Phase 3.
+- [x] BTC beta/correlation and confidence labels are plausible for the displayed symbols.
+- [x] Correlated assets appear together while unrelated or insufficient-data symbols are not presented as certain.
+- [x] Relative-strength ordering is plausible inside at least one multi-symbol cluster.
+- [x] Any simultaneous open/armed same-direction correlated theses appear as shared exposure, or the empty state is truthful if none exist.
+- [x] Only one healthy same-direction opportunity per cluster is selected; peers are queued.
+- [x] Selected risk is never above 1%, queued/unresolved risk is 0%, and the panel states shadow/no authority.
+- [x] Refresh latency and API usage remain operationally acceptable for two consecutive snapshots.
+- [x] No new engine-cycle failure is caused by Phase 3.
 
-Until these checks are approved, Phase 3 is implemented but not locked.
+Phase 3 was approved and locked on 2026-10-08. The reviewed Demo snapshots both had seven healthy symbols, no weak/insufficient data, no candle errors, and latency of 1,221 ms then 963 ms. BTC, SOL, ETH, XRP, and DOGE formed a plausible correlated cluster; BTC was selected while same-cluster action opportunities were queued at 0%. No position or armed signal existed, so the 0% effective-exposure state was truthful. The user's explicit instruction to start Phase 4 approved the Phase 3 exit.

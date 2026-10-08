@@ -150,6 +150,16 @@ class Store:
             """,
             "CREATE INDEX IF NOT EXISTS idx_thesisedge_portfolio_time "
             "ON thesisedge_portfolio_snapshots(computed_at_ms)",
+            f"""
+            CREATE TABLE IF NOT EXISTS thesisedge_playbook_snapshots (
+                id {id_column}, snapshot_id TEXT NOT NULL UNIQUE,
+                created_at_ms BIGINT NOT NULL, symbol TEXT NOT NULL,
+                computed_at_ms BIGINT NOT NULL, schema_version TEXT NOT NULL,
+                mode TEXT NOT NULL, payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_thesisedge_playbook_symbol_time "
+            "ON thesisedge_playbook_snapshots(symbol, computed_at_ms)",
         ]
         for statement in statements:
             self._execute(statement)
@@ -641,3 +651,32 @@ class Store:
         payload["mode"] = item["mode"]
         payload["stored_at_ms"] = item["created_at_ms"]
         return payload
+
+    def record_thesisedge_playbook(self, snapshot: dict[str, object], mode: str = "shadow") -> None:
+        self._execute(
+            """INSERT INTO thesisedge_playbook_snapshots
+               (snapshot_id, created_at_ms, symbol, computed_at_ms, schema_version, mode, payload)
+               VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(snapshot_id) DO NOTHING""",
+            (
+                str(snapshot["snapshot_id"]), int(time.time() * 1000), str(snapshot["symbol"]),
+                int(snapshot["computed_at_ms"]), str(snapshot["schema_version"]), mode,
+                json.dumps(snapshot, sort_keys=True),
+            ),
+        )
+
+    def latest_thesisedge_playbooks(self) -> list[dict[str, Any]]:
+        rows = self._execute(
+            """SELECT payload, mode, created_at_ms FROM thesisedge_playbook_snapshots p
+               WHERE id = (SELECT id FROM thesisedge_playbook_snapshots
+                           WHERE symbol=p.symbol ORDER BY computed_at_ms DESC, id DESC LIMIT 1)
+               ORDER BY symbol""",
+            fetch="all",
+        )
+        output = []
+        for row in rows:
+            item = self._dict(row)
+            payload = json.loads(item["payload"])
+            payload["mode"] = item["mode"]
+            payload["stored_at_ms"] = item["created_at_ms"]
+            output.append(payload)
+        return output

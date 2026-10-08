@@ -69,6 +69,8 @@ class ThesisEdgeFoundationTests(unittest.TestCase):
             Settings("", "", v2_structure_mode="active").validate()
         with self.assertRaisesRegex(ValueError, "requires V2_UNIVERSE_MODE=shadow"):
             Settings("", "", v2_portfolio_mode="shadow").validate()
+        with self.assertRaisesRegex(ValueError, "requires V2_STRUCTURE_MODE=shadow"):
+            Settings("", "", v2_structure_mode="off", v2_playbook_mode="shadow").validate()
 
     def test_decision_record_is_deduplicated_and_replays(self):
         candles_5m = sample_candles(300_000, 30)

@@ -20,6 +20,8 @@ Phase 2 adds a separate Dynamic Scanner Funnel in `shadow` mode. It pre-screens 
 
 Phase 3 adds an observation-only Portfolio Map from closed 1h returns. It records BTC beta/correlation, dynamic correlation clusters, data-confidence labels, relative strength, and effective open/armed exposure. Healthy same-direction opportunities in one cluster are ranked so only the highest quality is selected at the normal configured 1% risk; correlated peers and unresolved data receive 0% shadow risk. It cannot change V1 or place orders. The provisional contract and pending live review are documented in [`docs/THESISEDGE_PHASE3_REVIEW.md`](docs/THESISEDGE_PHASE3_REVIEW.md).
 
+Phase 4 adds a shadow Regime/Location context and three explicit playbooks: Trend Pullback, Range Reversal, and Breakout Retest. Every match carries its required context, direction, reason code, and invalidation; insufficient context is `UNKNOWN`, while known context without an approved edge is `NO_MATCHING_PLAYBOOK`. Mid-range patterns cannot become setups. Current evidence is visible on System and the review contract is in [`docs/THESISEDGE_PHASE4_REVIEW.md`](docs/THESISEDGE_PHASE4_REVIEW.md).
+
 ## Strategy implemented
 
 1. Refresh a 10-symbol universe daily. `BTCUSDT` and `ETHUSDT` stay fixed; the other eight are ranked by 24h turnover, open interest and bid/ask spread. Listings younger than 30 days and non-standard underlyings are excluded.

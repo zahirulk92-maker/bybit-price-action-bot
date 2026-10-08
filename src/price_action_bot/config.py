@@ -82,6 +82,10 @@ class Settings:
     portfolio_healthy_overlap: int = 60
     portfolio_cluster_correlation: float = 0.70
     portfolio_refresh_seconds: int = 900
+    playbook_min_1h_candles: int = 60
+    playbook_min_5m_candles: int = 30
+    playbook_zone_proximity_atr: float = 0.25
+    playbook_breakout_retest_max_age_hours: int = 8
     structure_internal_swing_width: int = 2
     structure_major_swing_width: int = 5
     structure_atr_period: int = 14
@@ -156,6 +160,10 @@ class Settings:
             portfolio_healthy_overlap=int(os.getenv("PORTFOLIO_HEALTHY_OVERLAP", "60")),
             portfolio_cluster_correlation=float(os.getenv("PORTFOLIO_CLUSTER_CORRELATION", "0.70")),
             portfolio_refresh_seconds=int(os.getenv("PORTFOLIO_REFRESH_SECONDS", "900")),
+            playbook_min_1h_candles=int(os.getenv("PLAYBOOK_MIN_1H_CANDLES", "60")),
+            playbook_min_5m_candles=int(os.getenv("PLAYBOOK_MIN_5M_CANDLES", "30")),
+            playbook_zone_proximity_atr=float(os.getenv("PLAYBOOK_ZONE_PROXIMITY_ATR", "0.25")),
+            playbook_breakout_retest_max_age_hours=int(os.getenv("PLAYBOOK_BREAKOUT_RETEST_MAX_AGE_HOURS", "8")),
             structure_internal_swing_width=int(os.getenv("STRUCTURE_INTERNAL_SWING_WIDTH", "2")),
             structure_major_swing_width=int(os.getenv("STRUCTURE_MAJOR_SWING_WIDTH", "5")),
             structure_atr_period=int(os.getenv("STRUCTURE_ATR_PERIOD", "14")),
@@ -212,6 +220,8 @@ class Settings:
                 raise ValueError(f"{name} must be off or shadow until explicitly promoted")
         if self.v2_portfolio_mode == "shadow" and self.v2_universe_mode != "shadow":
             raise ValueError("V2_PORTFOLIO_MODE=shadow requires V2_UNIVERSE_MODE=shadow")
+        if self.v2_playbook_mode == "shadow" and self.v2_structure_mode != "shadow":
+            raise ValueError("V2_PLAYBOOK_MODE=shadow requires V2_STRUCTURE_MODE=shadow")
         if min(self.v2_taker_fee_rate, self.v2_slippage_rate) < 0:
             raise ValueError("V2 fee and slippage rates cannot be negative")
         if not 0 <= self.v2_max_friction_risk_fraction < 1:
@@ -222,6 +232,7 @@ class Settings:
         self.portfolio_parameters().validate()
         if not 300 <= self.portfolio_refresh_seconds <= 3_600:
             raise ValueError("PORTFOLIO_REFRESH_SECONDS must be between 300 and 3600")
+        self.playbook_parameters().validate()
         self.structure_parameters().validate()
 
     def recovery_policy(self):
@@ -289,4 +300,14 @@ class Settings:
             healthy_overlap=self.portfolio_healthy_overlap,
             cluster_correlation=self.portfolio_cluster_correlation,
             risk_per_trade=self.risk_per_trade,
+        )
+
+    def playbook_parameters(self):
+        from .playbooks import PlaybookParameters
+
+        return PlaybookParameters(
+            min_1h_candles=self.playbook_min_1h_candles,
+            min_5m_candles=self.playbook_min_5m_candles,
+            zone_proximity_atr=self.playbook_zone_proximity_atr,
+            breakout_retest_max_age_hours=self.playbook_breakout_retest_max_age_hours,
         )
