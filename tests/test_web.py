@@ -65,6 +65,17 @@ class ChartApiTests(unittest.TestCase):
         self.assertIn("thesisedge-sidebar-hidden", dashboard)
         self.assertIn("function toggleNavigation()", dashboard)
 
+    def test_performance_trade_metric_tones_follow_the_value_sign(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn(
+            'Number(pnl.best_trade)>=0?\'bullish\':\'bearish\'',
+            dashboard,
+        )
+        self.assertIn(
+            'Number(pnl.worst_trade)>=0?\'bullish\':\'bearish\'',
+            dashboard,
+        )
+
     def test_system_page_contains_phase2_scanner_funnel(self):
         dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="scannerMetrics"', dashboard)
