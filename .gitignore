@@ -19,3 +19,13 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+
+.env
+.venv/
+local_secrate/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
