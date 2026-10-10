@@ -233,12 +233,13 @@ def setup_checklist(
     candles_5m: list[Candle],
     context: MarketContext,
     volume_multiplier: float = 1.2,
-    min_reward_risk: float = 1.5,
+    min_reward_risk: float = 2.0,
+    entry_timeframe_label: str = "5m",
 ) -> dict[str, object]:
     """Explain the current setup decision without changing strategy behavior."""
     if len(candles_5m) < 23:
         return {
-            "summary": "Waiting for enough closed 5m candles",
+            "summary": f"Waiting for enough closed {entry_timeframe_label} candles",
             "candle_time_ms": 0,
             "checks": [],
         }
@@ -305,7 +306,7 @@ def setup_checklist(
     if not touched:
         summary = "Waiting for price to reach the 1h target zone"
     elif not candidate:
-        summary = "Zone reached — waiting for an approved 5m reversal candle"
+        summary = f"Zone reached — waiting for an approved {entry_timeframe_label} reversal candle"
     elif ratio < volume_multiplier:
         summary = "Pattern found — volume confirmation is too weak"
     elif rr_status == "fail":
@@ -323,7 +324,7 @@ def setup_checklist(
         "checks": [
             {"key": "structure", "label": "1H structure", "status": "pass", "detail": structure_detail},
             {"key": "zone", "label": "Target zone", "status": zone_status, "detail": zone_detail},
-            {"key": "pattern", "label": "5m reversal candle", "status": pattern_status, "detail": pattern_detail},
+            {"key": "pattern", "label": f"{entry_timeframe_label} reversal candle", "status": pattern_status, "detail": pattern_detail},
             {"key": "volume", "label": "Volume confirmation", "status": volume_status, "detail": volume_detail},
             {"key": "rr", "label": "Reward to risk", "status": rr_status, "detail": rr_detail},
             {"key": "trigger", "label": "Entry trigger", "status": "wait", "detail": "Available after the setup is armed"},
@@ -332,6 +333,10 @@ def setup_checklist(
 
 
 def reward_risk(entry: float, stop: float, target: float, side: Side) -> float:
+    if side == "Buy" and (stop >= entry or target <= entry):
+        return 0.0
+    if side == "Sell" and (stop <= entry or target >= entry):
+        return 0.0
     risk = abs(entry - stop)
     if risk <= 0:
         return 0.0

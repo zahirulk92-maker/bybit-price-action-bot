@@ -12,7 +12,7 @@ from .models import Candle, MarketContext
 V1_POLICY_VERSION = "v1.0.0-frozen"
 V2_PLAN_VERSION = "thesisedge-v2.0-locked"
 DECISION_SCHEMA_VERSION = "thesisedge.phase0.v1"
-FeatureMode = Literal["off", "shadow"]
+FeatureMode = Literal["off", "shadow", "demo"]
 
 
 def canonical_json(value: object) -> str:
@@ -50,16 +50,16 @@ class V2FeatureFlags:
 
     def __post_init__(self) -> None:
         for name, mode in asdict(self).items():
-            if mode not in {"off", "shadow"}:
-                raise ValueError(f"ThesisEdge feature {name} must be off or shadow in Phase 0")
+            allowed = {"off", "shadow", "demo"} if name == "universe" else {"off", "shadow"}
+            if mode not in allowed:
+                raise ValueError(f"ThesisEdge feature {name} must be one of {sorted(allowed)}")
 
     def as_dict(self) -> dict[str, FeatureMode]:
         return asdict(self)
 
     @property
     def has_execution_authority(self) -> bool:
-        # Phase 0 deliberately has no authority-bearing mode.
-        return False
+        return self.universe == "demo"
 
 
 @dataclass(frozen=True)
@@ -135,10 +135,11 @@ def build_v1_decision_audit(
     policy_settings: dict[str, object],
     runtime_state: dict[str, object],
     feature_flags: V2FeatureFlags,
+    entry_timeframe: str = "5m",
 ) -> dict[str, object]:
     if not candles_5m or not candles_1h:
-        raise ValueError("Decision audit requires both 5m and 1h candle inputs")
-    five_payload = [candle_payload(item) for item in candles_5m]
+        raise ValueError(f"Decision audit requires both {entry_timeframe} and 1h candle inputs")
+    entry_payload = [candle_payload(item) for item in candles_5m]
     hour_payload = [candle_payload(item) for item in candles_1h]
     input_payload = {
         "context": context_payload(context),
@@ -148,11 +149,11 @@ def build_v1_decision_audit(
         "v2_execution_authority": feature_flags.has_execution_authority,
     }
     references = {
-        "5m": {
+        entry_timeframe: {
             "from_ms": candles_5m[0].timestamp_ms,
             "to_ms": candles_5m[-1].timestamp_ms,
             "count": len(candles_5m),
-            "sha256": fingerprint(five_payload),
+            "sha256": fingerprint(entry_payload),
         },
         "1h": {
             "from_ms": candles_1h[0].timestamp_ms,
@@ -189,14 +190,15 @@ def replay_v1_checklist(
 ) -> dict[str, object]:
     """Replay a Phase-0 V1 checklist without exchange or order side effects."""
     references = record["candle_references"]
+    entry_timeframe = next(key for key in references if key != "1h")
     actual_hashes = {
-        "5m": fingerprint([candle_payload(item) for item in candles_5m]),
+        entry_timeframe: fingerprint([candle_payload(item) for item in candles_5m]),
         "1h": fingerprint([candle_payload(item) for item in candles_1h]),
     }
     inputs_match = all(
         actual_hashes[interval] == references[interval]["sha256"]
         and len(candles) == references[interval]["count"]
-        for interval, candles in (("5m", candles_5m), ("1h", candles_1h))
+        for interval, candles in ((entry_timeframe, candles_5m), ("1h", candles_1h))
     )
     settings = record["input_payload"]["policy_settings"]
     replayed = setup_checklist(
@@ -204,6 +206,7 @@ def replay_v1_checklist(
         market_context(candles_1h),
         float(settings["volume_multiplier"]),
         float(settings["min_reward_risk"]),
+        entry_timeframe,
     )
     expected = record["decision_payload"]
     return {

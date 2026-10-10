@@ -35,7 +35,7 @@ class Settings:
     max_open_positions: int = 3
     max_total_open_risk: float = 0.03
     daily_max_net_loss: float = 0.05
-    min_reward_risk: float = 1.5
+    min_reward_risk: float = 2.0
     volume_multiplier: float = 1.2
     universe_size: int = 10
     poll_seconds: int = 20
@@ -53,7 +53,7 @@ class Settings:
     daily_report_minute: int = 55
     v2_instrumentation_enabled: bool = True
     v2_structure_mode: str = "shadow"
-    v2_universe_mode: str = "off"
+    v2_universe_mode: str = "demo"
     v2_portfolio_mode: str = "off"
     v2_playbook_mode: str = "off"
     v2_thesis_mode: str = "off"
@@ -66,17 +66,17 @@ class Settings:
     scanner_min_open_interest: float = 250_000.0
     scanner_max_spread_fraction: float = 0.0015
     scanner_anomaly_move_fraction: float = 0.25
-    scanner_candidate_max: int = 30
-    scanner_deep_analysis_max: int = 15
-    scanner_action_queue_max: int = 5
+    scanner_candidate_max: int = 20
+    scanner_deep_analysis_max: int = 10
+    scanner_action_queue_max: int = 10
     scanner_newcomer_advantage_fraction: float = 0.05
     scanner_exit_grace_scans: int = 2
     scanner_near_zone_fraction: float = 0.01
     scanner_high_volatility_fraction: float = 0.12
     scanner_abnormal_volatility_fraction: float = 0.35
     scanner_churn_limit_fraction: float = 0.25
-    scanner_latency_limit_ms: int = 2_000
-    scanner_refresh_seconds: int = 300
+    scanner_latency_limit_ms: int = 15_000
+    scanner_refresh_seconds: int = 900
     portfolio_lookback_hours: int = 72
     portfolio_min_overlap: int = 36
     portfolio_healthy_overlap: int = 60
@@ -111,7 +111,7 @@ class Settings:
             max_open_positions=int(os.getenv("MAX_OPEN_POSITIONS", "3")),
             max_total_open_risk=float(os.getenv("MAX_TOTAL_OPEN_RISK", "0.03")),
             daily_max_net_loss=float(os.getenv("DAILY_MAX_NET_LOSS", "0.05")),
-            min_reward_risk=float(os.getenv("MIN_REWARD_RISK", "1.5")),
+            min_reward_risk=float(os.getenv("MIN_REWARD_RISK", "2.0")),
             volume_multiplier=float(os.getenv("VOLUME_MULTIPLIER", "1.2")),
             universe_size=int(os.getenv("UNIVERSE_SIZE", "10")),
             poll_seconds=int(os.getenv("POLL_SECONDS", "20")),
@@ -129,7 +129,7 @@ class Settings:
             daily_report_minute=int(os.getenv("DAILY_REPORT_MINUTE", "55")),
             v2_instrumentation_enabled=_bool("V2_INSTRUMENTATION_ENABLED", True),
             v2_structure_mode=os.getenv("V2_STRUCTURE_MODE", "shadow").strip().lower(),
-            v2_universe_mode=os.getenv("V2_UNIVERSE_MODE", "off").strip().lower(),
+            v2_universe_mode=os.getenv("V2_UNIVERSE_MODE", "demo").strip().lower(),
             v2_portfolio_mode=os.getenv("V2_PORTFOLIO_MODE", "off").strip().lower(),
             v2_playbook_mode=os.getenv("V2_PLAYBOOK_MODE", "off").strip().lower(),
             v2_thesis_mode=os.getenv("V2_THESIS_MODE", "off").strip().lower(),
@@ -144,17 +144,17 @@ class Settings:
             scanner_min_open_interest=float(os.getenv("SCANNER_MIN_OPEN_INTEREST", "250000")),
             scanner_max_spread_fraction=float(os.getenv("SCANNER_MAX_SPREAD_FRACTION", "0.0015")),
             scanner_anomaly_move_fraction=float(os.getenv("SCANNER_ANOMALY_MOVE_FRACTION", "0.25")),
-            scanner_candidate_max=int(os.getenv("SCANNER_CANDIDATE_MAX", "30")),
-            scanner_deep_analysis_max=int(os.getenv("SCANNER_DEEP_ANALYSIS_MAX", "15")),
-            scanner_action_queue_max=int(os.getenv("SCANNER_ACTION_QUEUE_MAX", "5")),
+            scanner_candidate_max=int(os.getenv("SCANNER_CANDIDATE_MAX", "20")),
+            scanner_deep_analysis_max=int(os.getenv("SCANNER_DEEP_ANALYSIS_MAX", "10")),
+            scanner_action_queue_max=int(os.getenv("SCANNER_ACTION_QUEUE_MAX", "10")),
             scanner_newcomer_advantage_fraction=float(os.getenv("SCANNER_NEWCOMER_ADVANTAGE_FRACTION", "0.05")),
             scanner_exit_grace_scans=int(os.getenv("SCANNER_EXIT_GRACE_SCANS", "2")),
             scanner_near_zone_fraction=float(os.getenv("SCANNER_NEAR_ZONE_FRACTION", "0.01")),
             scanner_high_volatility_fraction=float(os.getenv("SCANNER_HIGH_VOLATILITY_FRACTION", "0.12")),
             scanner_abnormal_volatility_fraction=float(os.getenv("SCANNER_ABNORMAL_VOLATILITY_FRACTION", "0.35")),
             scanner_churn_limit_fraction=float(os.getenv("SCANNER_CHURN_LIMIT_FRACTION", "0.25")),
-            scanner_latency_limit_ms=int(os.getenv("SCANNER_LATENCY_LIMIT_MS", "2000")),
-            scanner_refresh_seconds=int(os.getenv("SCANNER_REFRESH_SECONDS", "300")),
+            scanner_latency_limit_ms=int(os.getenv("SCANNER_LATENCY_LIMIT_MS", "15000")),
+            scanner_refresh_seconds=int(os.getenv("SCANNER_REFRESH_SECONDS", "900")),
             portfolio_lookback_hours=int(os.getenv("PORTFOLIO_LOOKBACK_HOURS", "72")),
             portfolio_min_overlap=int(os.getenv("PORTFOLIO_MIN_OVERLAP", "36")),
             portfolio_healthy_overlap=int(os.getenv("PORTFOLIO_HEALTHY_OVERLAP", "60")),
@@ -216,10 +216,11 @@ class Settings:
             "V2_MANAGEMENT_MODE": self.v2_management_mode,
         }
         for name, mode in feature_modes.items():
-            if mode not in {"off", "shadow"}:
-                raise ValueError(f"{name} must be off or shadow until explicitly promoted")
-        if self.v2_portfolio_mode == "shadow" and self.v2_universe_mode != "shadow":
-            raise ValueError("V2_PORTFOLIO_MODE=shadow requires V2_UNIVERSE_MODE=shadow")
+            allowed = {"off", "shadow", "demo"} if name == "V2_UNIVERSE_MODE" else {"off", "shadow"}
+            if mode not in allowed:
+                raise ValueError(f"{name} must be one of: {', '.join(sorted(allowed))}")
+        if self.v2_portfolio_mode == "shadow" and self.v2_universe_mode not in {"shadow", "demo"}:
+            raise ValueError("V2_PORTFOLIO_MODE=shadow requires V2_UNIVERSE_MODE=shadow or demo")
         if self.v2_playbook_mode == "shadow" and self.v2_structure_mode != "shadow":
             raise ValueError("V2_PLAYBOOK_MODE=shadow requires V2_STRUCTURE_MODE=shadow")
         if min(self.v2_taker_fee_rate, self.v2_slippage_rate) < 0:

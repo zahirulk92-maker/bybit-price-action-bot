@@ -63,3 +63,17 @@ Locked outcome:
 - Phase 2 remains `shadow` with `v2_execution_authority=false`.
 - Phase 2 parameters may not change without a new reviewed policy version.
 - Phase 3 may begin only after explicit user approval.
+
+## Demo promotion amendment — 2026-10-08
+
+The shadow-only contract above is retained as the original Phase 2 review record. It is superseded for the local Bybit Demo selector by explicit user approval of this promotion:
+
+1. The eligibility/liquidity scanner supplies discovery candidates.
+2. Closed 4h candles rank at most 20 directionally qualified symbols.
+3. Closed 1h structure and a relevant zone reduce that pool to at most 10 symbols aligned with the 4h direction.
+4. Closed 15m trend/momentum confirmation determines the active entry queue.
+5. Closed 5m patterns, next-candle triggers, minimum `2R`, risk limits, and all order safety checks remain authoritative after selection.
+
+`V2_UNIVERSE_MODE=demo` is the only active selector in Demo mode. The old fixed daily `select_symbols` execution path was removed rather than retained as a competing authority. The promotion grants symbol-selection authority only and does not grant Live trading authority. Structure, portfolio, playbook, thesis, and management modules remain shadow/off unless separately promoted.
+
+The original 2,000 ms limit measured a two-request shadow scan. The active multi-timeframe funnel can make up to 62 read-only market-data requests for a 20-symbol discovery pool, so its reviewed operational threshold is 15,000 ms. A stored snapshot from another schema or mode is treated as a new churn baseline rather than reported as market churn.

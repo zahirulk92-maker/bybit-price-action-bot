@@ -45,14 +45,11 @@ class ThesisEdgeFoundationTests(unittest.TestCase):
         self.store.connection.close()
         self.temp_dir.cleanup()
 
-    def test_phase0_flags_have_no_execution_authority(self):
+    def test_demo_universe_is_the_only_promoted_feature(self):
         settings = Settings("", "")
         self.assertTrue(settings.v2_instrumentation_enabled)
         self.assertEqual(settings.v2_feature_modes()["structure"], "shadow")
-        self.assertEqual(
-            {mode for name, mode in settings.v2_feature_modes().items() if name != "structure"},
-            {"off"},
-        )
+        self.assertEqual(settings.v2_feature_modes()["universe"], "demo")
         flags = V2FeatureFlags(
             structure="shadow",
             universe="shadow",
@@ -63,12 +60,14 @@ class ThesisEdgeFoundationTests(unittest.TestCase):
         )
         self.assertFalse(flags.has_execution_authority)
         self.assertEqual(flags.as_dict()["thesis"], "shadow")
-        with self.assertRaisesRegex(ValueError, "must be off or shadow"):
+        self.assertTrue(V2FeatureFlags(universe="demo").has_execution_authority)
+        with self.assertRaisesRegex(ValueError, "must be one of"):
             V2FeatureFlags(structure="active")
-        with self.assertRaisesRegex(ValueError, "must be off or shadow"):
+        with self.assertRaisesRegex(ValueError, "must be one of"):
             Settings("", "", v2_structure_mode="active").validate()
-        with self.assertRaisesRegex(ValueError, "requires V2_UNIVERSE_MODE=shadow"):
-            Settings("", "", v2_portfolio_mode="shadow").validate()
+        Settings("", "", v2_universe_mode="demo", v2_portfolio_mode="shadow").validate()
+        with self.assertRaisesRegex(ValueError, "requires V2_UNIVERSE_MODE=shadow or demo"):
+            Settings("", "", v2_universe_mode="off", v2_portfolio_mode="shadow").validate()
         with self.assertRaisesRegex(ValueError, "requires V2_STRUCTURE_MODE=shadow"):
             Settings("", "", v2_structure_mode="off", v2_playbook_mode="shadow").validate()
 

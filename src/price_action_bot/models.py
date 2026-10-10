@@ -102,3 +102,4 @@ class Trade:
     tp2_target: float = 0.0
     tp2_taken: bool = False
     tp3_taken: bool = False
+    trade_id: str = ""

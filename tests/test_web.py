@@ -45,9 +45,52 @@ class ChartApiTests(unittest.TestCase):
             web.api_chart("BTCUSDT", "1", 160, "test")
         self.assertEqual(raised.exception.status_code, 400)
 
+    def test_chart_accepts_four_hour_interval_with_one_hour_structure(self):
+        candles_4h = [Candle(14_400_000, 100, 104, 98, 102, 50)]
+        candles_1h = [Candle(3_600_000, 99, 103, 97, 101, 40)]
+        with patch.object(web.store, "market_snapshots", return_value=[self.market]), patch.object(
+            web.chart_gateway, "candles", side_effect=[candles_4h, candles_1h]
+        ) as mocked_candles:
+            result = web.api_chart("BTCUSDT", "240", 180, "test")
+        self.assertEqual(result["interval"], "240")
+        self.assertEqual(result["candles"][0]["close"], 102)
+        self.assertEqual(mocked_candles.call_args_list[0].args, ("BTCUSDT", "240", 180))
+        self.assertEqual(mocked_candles.call_args_list[1].args, ("BTCUSDT", "60", 200))
+
+    def test_dashboard_offers_four_hour_chart(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('data-interval="240">4h</button>', dashboard)
+
     def test_audit_page_is_available(self):
         response = web.audit_dashboard("test")
         self.assertTrue(str(response.path).endswith("audit.html"))
+        audit_page = (Path(web.__file__).parent / "static" / "audit.html").read_text(encoding="utf-8")
+        self.assertIn('id="diagnosisSummary"', audit_page)
+        self.assertIn('id="diagnosisIssues"', audit_page)
+        self.assertIn('id="diagnosisSymbols"', audit_page)
+        self.assertIn('id="diagnosisStrategies"', audit_page)
+        self.assertIn('id="diagnosisRows"', audit_page)
+        self.assertIn("function renderDiagnosisReport", audit_page)
+
+    def test_trade_replay_route_uses_authenticated_app_shell(self):
+        response = web.trade_replay_dashboard("ta-test", "test")
+        self.assertTrue(str(response.path).endswith("index.html"))
+        with self.assertRaises(HTTPException) as raised:
+            web.trade_replay_dashboard("x" * 129, "test")
+        self.assertEqual(raised.exception.status_code, 400)
+
+    def test_closed_trade_links_to_immutable_replay_view(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="tradeReplayPanel"', dashboard)
+        self.assertIn('href="/trades/${encodeURIComponent(tradeId)}"', dashboard)
+        self.assertIn("function loadTradeReplay()", dashboard)
+        self.assertIn("function renderTradeReplay(audit,candlePayload,diagnosis)", dashboard)
+        self.assertIn("function renderReplayChart(candles,audit)", dashboard)
+        self.assertIn("function renderReplayDiagnosis(diagnosis)", dashboard)
+        self.assertIn('id="replayVerdict"', dashboard)
+        self.assertIn("INITIAL SL", dashboard)
+        self.assertIn("EXCHANGE EXIT", dashboard)
+        self.assertIn("No captured candle path", dashboard)
 
     def test_sidebar_pages_use_the_authenticated_app_shell(self):
         for page in ("overview", "structure", "signals", "positions", "performance", "journal", "system"):
@@ -310,6 +353,93 @@ class ChartApiTests(unittest.TestCase):
         ])
         self.assertTrue(all(item["status"] == "passed" for item in result["checks"]))
         self.assertIn("1004.2500 USDT", result["checks"][2]["detail"])
+
+    def test_trade_audit_list_is_read_only_and_filtered(self):
+        rows = [{"trade_id": "ta-1", "symbol": "BTCUSDT"}]
+        with patch.object(web.store, "recent_trade_audits", return_value=rows) as recent:
+            result = web.api_trade_audits(25, " btcusdt ", " closed ", "test")
+
+        recent.assert_called_once_with(25, symbol="BTCUSDT", status="CLOSED")
+        self.assertTrue(result["read_only"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["rows"], rows)
+
+    def test_trade_audit_detail_and_events_share_one_record(self):
+        audit = {
+            "trade_id": "ta-1",
+            "symbol": "BTCUSDT",
+            "events": [{"event_type": "FILL_CONFIRMED", "payload": {}}],
+        }
+        with patch.object(web.store, "trade_audit", return_value=audit):
+            detail = web.api_trade_audit("ta-1", "test")
+            events = web.api_trade_events("ta-1", "test")
+
+        self.assertTrue(detail["read_only"])
+        self.assertEqual(detail["audit"], audit)
+        self.assertEqual(detail["diagnosis"]["verdict"], "INSUFFICIENT_DATA")
+        self.assertEqual(events["count"], 1)
+        self.assertEqual(events["events"][0]["event_type"], "FILL_CONFIRMED")
+
+    def test_trade_diagnosis_endpoint_is_read_only(self):
+        audit = {"trade_id": "ta-1", "symbol": "BTCUSDT", "events": []}
+        with patch.object(web.store, "trade_audit", return_value=audit):
+            result = web.api_trade_diagnosis("ta-1", "test")
+
+        self.assertTrue(result["read_only"])
+        self.assertTrue(result["diagnosis"]["read_only"])
+        self.assertEqual(result["diagnosis"]["authority"], "diagnostic_only")
+
+    def test_trade_diagnosis_report_is_local_read_only_and_period_filtered(self):
+        now_ms = int(time.time() * 1000)
+        summaries = [
+            {"trade_id": "ta-new", "closed_at_ms": now_ms - 1_000},
+            {"trade_id": "ta-old", "closed_at_ms": now_ms - 40 * 24 * 60 * 60 * 1000},
+        ]
+        audit = {
+            "trade_id": "ta-new", "symbol": "BTCUSDT", "side": "Buy",
+            "events": [], "closed_at_ms": now_ms - 1_000,
+        }
+        with patch.object(
+            web.store, "recent_trade_audits", return_value=summaries
+        ) as recent, patch.object(
+            web.store, "trade_audit", return_value=audit
+        ) as detail:
+            result = web.api_trade_diagnosis_report(7, " btcusdt ", 200, "test")
+
+        recent.assert_called_once_with(200, symbol="BTCUSDT", status="CLOSED")
+        detail.assert_called_once_with("ta-new")
+        self.assertTrue(result["read_only"])
+        self.assertEqual(result["authority"], "diagnostic_only")
+        self.assertEqual(result["symbol_filter"], "BTCUSDT")
+        self.assertEqual(result["summary"]["total_captured_trades"], 1)
+
+    def test_trade_candles_returns_only_captured_local_path(self):
+        audit = {"trade_id": "ta-1", "symbol": "BTCUSDT", "events": []}
+        candles = [Candle(1_000, 100, 105, 98, 104, 25)]
+        with patch.object(web.store, "trade_audit", return_value=audit), patch.object(
+            web.store, "trade_candles", return_value=candles
+        ) as captured:
+            result = web.api_trade_candles("ta-1", "5m", "test")
+
+        captured.assert_called_once_with("ta-1", "5m")
+        self.assertTrue(result["read_only"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["candles"][0]["high"], 105)
+
+    def test_trade_audit_endpoints_reject_missing_or_uncaptured_interval(self):
+        with patch.object(web.store, "trade_audit", return_value=None):
+            with self.assertRaises(HTTPException) as missing:
+                web.api_trade_audit("ta-missing", "test")
+        self.assertEqual(missing.exception.status_code, 404)
+
+        with patch.object(
+            web.store,
+            "trade_audit",
+            return_value={"trade_id": "ta-1", "symbol": "BTCUSDT", "events": []},
+        ):
+            with self.assertRaises(HTTPException) as interval:
+                web.api_trade_candles("ta-1", "15m", "test")
+        self.assertEqual(interval.exception.status_code, 400)
 
     def test_audit_combines_exchange_and_local_sources(self):
         configured = replace(web.settings, api_key="demo-key", api_secret="demo-secret")

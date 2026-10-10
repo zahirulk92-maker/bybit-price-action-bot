@@ -8,7 +8,7 @@ This file records implementation status only. The locked design remains in [`THE
 |---|---|---|
 | Phase 0 — Baseline and instrumentation | Complete | Exit gate passed locally on 2026-10-07; 39/39 tests and deterministic replay checks passed |
 | Phase 1 — Market Structure Map | Complete | Exit gate passed on 2026-10-08 after BTC, ETH, and ZEC 1h chart review and overlay-noise cleanup; shadow only |
-| Phase 2 — Dynamic scanner funnel | Complete | Exit gate passed on 2026-10-08 after two live Demo snapshots, stable candidate pool, dynamic deep/action pools, and in-limit latency; shadow only |
+| Phase 2 — Dynamic scanner funnel | Complete; promoted for Demo selection | Shadow exit gate passed, then explicit 2026-10-08 promotion to the single active 4h → 1h → 15m Demo selector; no Live authority |
 | Phase 3 — Portfolio correlation and relative strength | Complete | Exit approved on 2026-10-08 after deterministic shared-exposure replay and two healthy Demo snapshots; shadow only |
 | Phase 4 — Regime, location, and three playbooks | Implementation complete; shadow review pending | Context contract plus symmetric Trend Pullback, Range Reversal, and Breakout Retest matchers; no signal, risk, or order authority |
 | Phase 5 — Thesis, conflicts, ranking | Not started | — |
@@ -21,7 +21,7 @@ This file records implementation status only. The locked design remains in [`THE
 
 - [x] Current V1 policy has a stable version identifier.
 - [x] Context, structure, conflict, thesis, and outcome schemas exist.
-- [x] Every V2 feature initially defaulted to `off` and can only be set to `off` or `shadow`.
+- [x] Every V2 feature initially defaulted to `off`/`shadow`; the universe module was later explicitly promoted to `demo` selection authority while all other modules remain `off`/`shadow`.
 - [x] V2 feature modes expose no order authority.
 - [x] Closed 5m/1h candle inputs are archived once and referenced by hash.
 - [x] Base V1 checklist decisions are append-only, versioned, and deduplicated.
@@ -85,8 +85,9 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE1_REVIEW.md`](THESISE
 - [x] Keep armed/open symbols in the tracking schedule even when they fail discovery filters.
 - [x] Persist append-only, deduplicated scanner snapshots and exclusion metrics.
 - [x] Expose candidate, deep, action, churn, latency, API-use, and exclusion evidence on the System page.
-- [x] Preserve the frozen V1 10-symbol execution universe and zero V2 order authority.
+- [x] Preserve the frozen V1 5m entry, risk, and order-safety gates during shadow review.
 - [x] Observe live Demo snapshots and approve candidate churn and scan latency against provisional limits.
+- [x] After explicit promotion, replace the old fixed daily selector with one active Demo funnel: 4h top 20 → 1h aligned top 10 → 15m confirmation → existing 5m entry logic.
 
 Review procedure and parameter contract: [`THESISEDGE_PHASE2_REVIEW.md`](THESISEDGE_PHASE2_REVIEW.md).
 
@@ -95,8 +96,8 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE2_REVIEW.md`](THESISE
 - Python compile check: passed
 - Dashboard inline JavaScript syntax: passed
 - Full regression suite after implementation: `66/66` passed
-- V1 strategy/risk changes: none
-- Phase 2 order authority: none (`shadow` only)
+- 5m entry, sizing, risk, and management changes: none
+- Phase 2 authority after promotion: Demo symbol selection only; no direct order or Live authority
 - Candidate count: capped, never padded to a target
 - Protected tracking: armed/open symbols cannot disappear from the tracking schedule
 - Provisional operational limits: churn at or below 25%; funnel latency at or below 2,000 ms
@@ -106,6 +107,17 @@ Review procedure and parameter contract: [`THESISEDGE_PHASE2_REVIEW.md`](THESISE
 - Protected tracking: deterministic and integration tests cover armed/open symbols; no live protected position existed during the review sample
 - Remaining exit gate: none
 - Next eligible phase: Phase 3 — Portfolio correlation and relative strength (approved and started on 2026-10-08)
+
+## Phase 2 Demo promotion record — 2026-10-08
+
+- Active mode: `V2_UNIVERSE_MODE=demo`
+- Discovery: exchange eligibility and liquidity pre-filter, with no forced padding
+- 4h stage: at most 20 symbols with directional evidence
+- 1h stage: at most 10 symbols aligned with 4h and carrying a relevant structure zone
+- 15m stage: closed-candle trend and momentum confirmation
+- 5m stage: existing pattern, volume, trigger, minimum `2R`, risk, duplicate-order, daily-loss, and position-limit gates
+- Old selector: removed from the execution path; no parallel V1/V2 universe authority remains
+- Live authority: none
 
 ## Phase 3 implementation checklist
 

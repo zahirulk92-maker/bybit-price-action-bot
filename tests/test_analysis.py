@@ -57,6 +57,9 @@ class PatternTests(unittest.TestCase):
 
     def test_reward_risk(self):
         self.assertEqual(reward_risk(100, 98, 104, "Buy"), 2.0)
+        self.assertEqual(reward_risk(100, 101, 104, "Buy"), 0.0)
+        self.assertEqual(reward_risk(100, 99, 96, "Buy"), 0.0)
+        self.assertEqual(reward_risk(100, 99, 96, "Sell"), 0.0)
 
     def test_trade_reversal_is_symmetric_for_both_sides(self):
         candles = self.history + [

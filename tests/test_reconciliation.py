@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from price_action_bot.config import Settings
@@ -78,6 +79,100 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(len(matching_events), 1)
         self.assertEqual(matching_events[0].args[1], "BTCUSDT")
         self.assertEqual(matching_events[0].kwargs["blocked_symbols"], ["HYPEUSDT"])
+
+    def test_preflight_rejects_entry_after_price_leaves_trigger_band(self):
+        pattern = PatternSignal(
+            name="bullish_engulfing", side="Buy", timestamp_ms=1,
+            trigger=100.0, stop=99.0, pattern_high=100.0, pattern_low=99.0,
+            volume_ratio=1.5,
+        )
+        armed = ArmedSignal(pattern=pattern, armed_at_ms=1, expires_at_ms=2, target=104.0)
+
+        self.engine._enter("BTCUSDT", armed, 99.99)
+
+        self.gateway.place_market_order.assert_not_called()
+        self.assertEqual(self.store.event.call_args.args[0], "ENTRY_BLOCKED_PREFLIGHT")
+
+    def test_actual_fill_outside_boundary_is_closed_without_being_persisted(self):
+        pattern = PatternSignal(
+            name="bullish_engulfing", side="Buy", timestamp_ms=1,
+            trigger=100.0, stop=99.0, pattern_high=100.0, pattern_low=99.0,
+            volume_ratio=1.5,
+        )
+        armed = ArmedSignal(pattern=pattern, armed_at_ms=1, expires_at_ms=2, target=104.0)
+        self.engine._check_daily_loss_limit = MagicMock(
+            return_value={"available": True, "breached": False}
+        )
+        self.engine._reconcile_exchange_positions = MagicMock()
+        self.gateway.equity_usdt.return_value = 1_000
+        self.gateway.instrument_rules.return_value = SimpleNamespace(
+            qty_step=0.001, min_qty=0.001, max_market_qty=1_000
+        )
+        self.gateway.place_market_order.return_value = "entry-1"
+        self.gateway.wait_for_position.return_value = {"avgPrice": "100.03", "size": "9"}
+
+        self.engine._enter("BTCUSDT", armed, 100.01)
+
+        self.gateway.close_partial.assert_called_once_with("BTCUSDT", "Buy", 9.0)
+        self.gateway.set_protection.assert_not_called()
+        self.store.save_trade.assert_not_called()
+        self.assertNotIn("BTCUSDT", self.engine.trades)
+        event_names = [call.args[0] for call in self.store.event.call_args_list]
+        self.assertIn("EMERGENCY_CLOSE_INVALID_FILL", event_names)
+
+    def test_valid_entry_captures_decision_sizing_and_lifecycle(self):
+        pattern = PatternSignal(
+            name="bullish_engulfing", side="Buy", timestamp_ms=1,
+            trigger=100.0, stop=99.0, pattern_high=100.0, pattern_low=99.0,
+            volume_ratio=1.5,
+        )
+        armed = ArmedSignal(pattern=pattern, armed_at_ms=1, expires_at_ms=2, target=104.0)
+        self.engine._check_daily_loss_limit = MagicMock(
+            return_value={"available": True, "breached": False}
+        )
+        self.engine._reconcile_exchange_positions = MagicMock()
+        self.engine.last_funnel_snapshot = {
+            "schema_version": "thesisedge.demo-funnel.v1",
+            "snapshot_id": "funnel-1",
+            "computed_at_ms": 123,
+            "candidate_pool": [{"symbol": "BTCUSDT", "bias_4h": "bullish"}],
+            "deep_analysis_pool": [{"symbol": "BTCUSDT", "bias_1h": "bullish"}],
+            "action_queue": [{"symbol": "BTCUSDT", "confirmation_15m": "fast_slow_momentum"}],
+        }
+        self.store.create_trade_audit.return_value = "ta-entry"
+        self.gateway.equity_usdt.return_value = 1_000
+        self.gateway.instrument_rules.return_value = SimpleNamespace(
+            qty_step=0.001, min_qty=0.001, max_market_qty=1_000
+        )
+        self.gateway.place_market_order.return_value = "entry-1"
+        self.gateway.wait_for_position.return_value = {"avgPrice": "100.01", "size": "9.9"}
+
+        self.engine._enter(
+            "BTCUSDT",
+            armed,
+            100.01,
+            {"summary": "Entry confirmed", "checks": [{"key": "trigger", "status": "pass"}]},
+        )
+
+        snapshot = self.store.create_trade_audit.call_args.args[0]
+        self.assertEqual(snapshot["decision"]["funnel"]["candidate_pool"]["bias_4h"], "bullish")
+        self.assertEqual(snapshot["decision"]["funnel"]["deep_analysis_pool"]["bias_1h"], "bullish")
+        self.assertEqual(snapshot["strategy"]["entry_timeframe"], "15m")
+        self.assertEqual(snapshot["sizing"]["risk_budget_usdt"], 10.0)
+        self.assertAlmostEqual(snapshot["sizing"]["expected_loss_at_stop_usdt"], 9.9 * 1.01)
+        saved_trade = self.store.save_trade.call_args.args[0]
+        self.assertEqual(saved_trade.trade_id, "ta-entry")
+        lifecycle_names = [
+            call.args[2] for call in self.store.record_trade_lifecycle_event.call_args_list
+        ]
+        self.assertEqual(
+            lifecycle_names,
+            [
+                "SETUP_FOUND", "ARMED", "SETUP_CAPTURED",
+                "ORDER_SUBMIT_REQUESTED", "ORDER_ACCEPTED", "FILL_CONFIRMED",
+                "PROTECTION_SET", "POSITION_OPENED",
+            ],
+        )
 
     def test_reconcile_closes_stale_local_trade(self):
         trade = self.trade()

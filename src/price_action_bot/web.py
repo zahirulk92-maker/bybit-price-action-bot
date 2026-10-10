@@ -16,6 +16,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from .config import Settings
+from .diagnostics import build_trade_diagnosis_report, diagnose_trade
 from .engine import TradingEngine
 from .exchange import BybitGateway
 from .notify import TelegramNotifier
@@ -349,6 +350,16 @@ def audit_dashboard(_: str = Depends(require_auth)) -> FileResponse:
     return FileResponse(static_dir / "audit.html")
 
 
+@app.get("/trades/{trade_id}", response_class=FileResponse)
+def trade_replay_dashboard(
+    trade_id: str,
+    _: str = Depends(require_auth),
+) -> FileResponse:
+    if not trade_id or len(trade_id) > 128:
+        raise HTTPException(status_code=400, detail="Invalid trade audit id")
+    return FileResponse(static_dir / "index.html")
+
+
 @app.get("/{page}", response_class=FileResponse)
 def dashboard_page(page: str, _: str = Depends(require_auth)) -> FileResponse:
     """Serve one authenticated app shell while preserving page-specific URLs."""
@@ -389,6 +400,7 @@ def _audit_payload(
     losses = sum(_number(row.get("closed_pnl")) < 0 for row in pnl_rows)
     heartbeat = store.get_heartbeat()
     reconciliation = (heartbeat.get("details") or {}).get("reconciliation", {})
+    diagnosis_report = _trade_diagnosis_report(since_ms, wanted)
     return {
         "generated_at_ms": now_ms,
         "since_ms": since_ms,
@@ -412,7 +424,34 @@ def _audit_payload(
         "trades": trades,
         "events": list(reversed(events)),
         "signals": signals,
+        "diagnosis_report": diagnosis_report,
     }
+
+
+def _trade_diagnosis_report(
+    since_ms: int,
+    symbol: str = "",
+    *,
+    limit: int = 200,
+) -> dict[str, object]:
+    """Build a local-only report from closed immutable trade audits."""
+    summaries = store.recent_trade_audits(
+        limit,
+        symbol=symbol.strip().upper(),
+        status="CLOSED",
+    )
+    audits: list[dict[str, object]] = []
+    for summary in summaries:
+        closed_at_ms = int(summary.get("closed_at_ms") or 0)
+        if closed_at_ms < since_ms:
+            continue
+        audit = store.trade_audit(str(summary.get("trade_id") or ""))
+        if audit is not None:
+            audits.append(audit)
+    report = build_trade_diagnosis_report(audits)
+    report["since_ms"] = since_ms
+    report["symbol_filter"] = symbol.strip().upper()
+    return report
 
 
 def _report_window(period: str, now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -670,7 +709,7 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
         store.recent_signal_journal(100), markets, worker_online
     )
     latest_v2_scanner = store.latest_thesisedge_universe()
-    if settings.v2_universe_mode == "shadow" and latest_v2_scanner:
+    if settings.v2_universe_mode in {"shadow", "demo"} and latest_v2_scanner:
         v2_scanner = latest_v2_scanner
         snapshot_age = now_ms - int(v2_scanner.get("computed_at_ms") or 0)
         operational = v2_scanner.get("metrics") or {}
@@ -682,7 +721,7 @@ def api_status(_: str = Depends(require_auth)) -> dict[str, object]:
     else:
         v2_scanner = {
             "mode": settings.v2_universe_mode,
-            "status": "waiting" if settings.v2_universe_mode == "shadow" else "off",
+            "status": "waiting" if settings.v2_universe_mode in {"shadow", "demo"} else "off",
             "candidate_pool": [],
             "deep_analysis_pool": [],
             "action_queue": [],
@@ -769,6 +808,113 @@ def api_connection_test(_: str = Depends(require_auth)) -> dict[str, object]:
     return _connection_test()
 
 
+def _trade_audit_or_404(trade_id: str) -> dict[str, object]:
+    if not trade_id or len(trade_id) > 128:
+        raise HTTPException(status_code=400, detail="Invalid trade audit id")
+    audit = store.trade_audit(trade_id)
+    if audit is None:
+        raise HTTPException(status_code=404, detail="Trade audit not found")
+    return audit
+
+
+@app.get("/api/trades/audits")
+def api_trade_audits(
+    limit: int = Query(50, ge=1, le=200),
+    symbol: str = Query("", max_length=30),
+    trade_status: str = Query("", alias="status", max_length=40),
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    """List locally captured trade evidence. This endpoint cannot place orders."""
+    rows = store.recent_trade_audits(
+        limit,
+        symbol=symbol.strip().upper(),
+        status=trade_status.strip().upper(),
+    )
+    return {"read_only": True, "count": len(rows), "rows": rows}
+
+
+@app.get("/api/trades/diagnosis-report")
+def api_trade_diagnosis_report(
+    days: int = Query(7, ge=1, le=30),
+    symbol: str = Query("", max_length=30),
+    limit: int = Query(200, ge=1, le=200),
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    """Compare captured diagnoses. This endpoint cannot alter trading state."""
+    since_ms = int(time.time() * 1000) - days * 24 * 60 * 60 * 1000
+    return _trade_diagnosis_report(since_ms, symbol, limit=limit)
+
+
+@app.get("/api/trades/{trade_id}/audit")
+def api_trade_audit(
+    trade_id: str,
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    audit = _trade_audit_or_404(trade_id)
+    return {
+        "read_only": True,
+        "audit": audit,
+        "diagnosis": diagnose_trade(audit),
+    }
+
+
+@app.get("/api/trades/{trade_id}/diagnosis")
+def api_trade_diagnosis(
+    trade_id: str,
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    audit = _trade_audit_or_404(trade_id)
+    return {"read_only": True, "diagnosis": diagnose_trade(audit)}
+
+
+@app.get("/api/trades/{trade_id}/events")
+def api_trade_events(
+    trade_id: str,
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    audit = _trade_audit_or_404(trade_id)
+    events = list(audit.get("events") or [])
+    return {
+        "read_only": True,
+        "trade_id": trade_id,
+        "count": len(events),
+        "events": events,
+    }
+
+
+@app.get("/api/trades/{trade_id}/candles")
+def api_trade_candles(
+    trade_id: str,
+    interval: str = Query("5m", max_length=10),
+    _: str = Depends(require_auth),
+) -> dict[str, object]:
+    audit = _trade_audit_or_404(trade_id)
+    if interval != "5m":
+        raise HTTPException(
+            status_code=400,
+            detail="Only the locally captured 5m trade path is currently available",
+        )
+    candles = store.trade_candles(trade_id, interval)
+    return {
+        "read_only": True,
+        "trade_id": trade_id,
+        "symbol": audit["symbol"],
+        "interval": interval,
+        "count": len(candles),
+        "candles": [
+            {
+                "time": candle.timestamp_ms,
+                "open": candle.open,
+                "high": candle.high,
+                "low": candle.low,
+                "close": candle.close,
+                "volume": candle.volume,
+            }
+            for candle in candles
+        ],
+    }
+
+
 @app.get("/api/chart/{symbol}")
 def api_chart(
     symbol: str,
@@ -777,8 +923,8 @@ def api_chart(
     _: str = Depends(require_auth),
 ) -> dict[str, object]:
     symbol = symbol.upper()
-    if interval not in {"5", "15", "60"}:
-        raise HTTPException(status_code=400, detail="Supported intervals: 5, 15, 60")
+    if interval not in {"5", "15", "60", "240"}:
+        raise HTTPException(status_code=400, detail="Supported intervals: 5, 15, 60, 240")
     markets = {row["symbol"]: row for row in store.market_snapshots()}
     if symbol not in markets:
         raise HTTPException(status_code=404, detail="Symbol is not in the active universe")

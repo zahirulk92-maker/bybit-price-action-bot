@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import signal
 import threading
@@ -14,16 +15,17 @@ from .models import ArmedSignal, Candle, MarketContext, SignalState, Trade
 from .notify import TelegramNotifier, format_alert
 from .playbooks import build_playbook_context
 from .portfolio import build_portfolio_map
-from .risk import one_r_price, position_size
+from .risk import entry_within_trigger_boundary, net_reward_risk, one_r_price, position_size
 from .store import Store
 from .structure import build_structure_map
-from .universe import build_scanner_funnel, select_symbols
+from .universe import build_demo_timeframe_funnel, build_scanner_funnel, timeframe_confirmation
 from .v2_foundation import V2FeatureFlags, build_v1_decision_audit
 
 
 LOGGER = logging.getLogger(__name__)
-FIVE_MINUTES_MS = 5 * 60 * 1000
-UNIVERSE_REFRESH_MS = 24 * 60 * 60 * 1000
+ENTRY_TIMEFRAME = "15"
+ENTRY_TIMEFRAME_LABEL = "15m"
+ENTRY_TIMEFRAME_MS = 15 * 60 * 1000
 RECONCILE_INTERVAL_MS = 60 * 1000
 
 
@@ -75,6 +77,9 @@ class TradingEngine:
         self.last_universe_refresh_ms = 0
         self.last_scanner_refresh_ms = 0
         self.last_portfolio_refresh_ms = 0
+        self.funnel_directions: dict[str, str] = {}
+        self.funnel_entry_symbols: set[str] = set()
+        self.last_funnel_snapshot: dict[str, object] = {}
         self.last_processed_candle: dict[str, int] = {}
         self.armed: dict[str, ArmedSignal] = {}
         self.journal_ids: dict[str, int] = {}
@@ -114,7 +119,7 @@ class TradingEngine:
     def _record_phase0_baseline(
         self,
         symbol: str,
-        candles_5m: list[Candle],
+        entry_candles: list[Candle],
         candles_1h: list[Candle],
         context: MarketContext,
         decision: dict[str, object],
@@ -127,7 +132,7 @@ class TradingEngine:
         try:
             record = build_v1_decision_audit(
                 symbol=symbol,
-                candles_5m=candles_5m,
+                candles_5m=entry_candles,
                 candles_1h=candles_1h,
                 context=context,
                 decision=decision,
@@ -147,8 +152,11 @@ class TradingEngine:
                     "last_price": last_price,
                 },
                 feature_flags=self.v2_feature_flags,
+                entry_timeframe=ENTRY_TIMEFRAME_LABEL,
             )
-            self.store.record_thesisedge_decision(record, candles_5m, candles_1h)
+            self.store.record_thesisedge_decision(
+                record, entry_candles, candles_1h, ENTRY_TIMEFRAME_LABEL
+            )
         except Exception:
             # Phase-0 observation must never alter V1 entry, management, or execution.
             LOGGER.exception("ThesisEdge Phase-0 audit failed for %s", symbol)
@@ -305,78 +313,115 @@ class TradingEngine:
 
     def refresh_universe(self, force: bool = False) -> None:
         now_ms = int(time.time() * 1000)
-        v1_due = force or now_ms - self.last_universe_refresh_ms >= UNIVERSE_REFRESH_MS
         scanner_interval_ms = self.settings.scanner_refresh_seconds * 1_000
-        scanner_due = (
-            self.settings.v2_universe_mode == "shadow"
-            and (force or now_ms - self.last_scanner_refresh_ms >= scanner_interval_ms)
-        )
-        if not v1_due and not scanner_due:
+        scanner_due = force or now_ms - self.last_scanner_refresh_ms >= scanner_interval_ms
+        if not scanner_due:
             return
         started = time.monotonic()
         try:
             tickers = self.gateway.tickers()
             instruments = self.gateway.instruments()
         except Exception:
-            if v1_due:
+            if not self.symbols:
                 raise
-            # A Phase-2-only refresh must not interrupt V1 symbol processing.
-            LOGGER.exception("ThesisEdge Phase-2 universe request failed")
+            LOGGER.exception("Demo timeframe funnel universe request failed")
             try:
-                self.store.event("THESISEDGE_SCANNER_FUNNEL_ERROR", stage="universe_request")
+                self.store.event("DEMO_TIMEFRAME_FUNNEL_ERROR", stage="universe_request")
             except Exception:
                 LOGGER.exception("Could not persist scanner request failure")
             self.last_scanner_refresh_ms = now_ms
             return
-        if v1_due:
-            selected = select_symbols(tickers, instruments, self.settings.universe_size, now_ms)
-            if len(selected) < self.settings.universe_size:
-                raise RuntimeError(
-                    f"Only {len(selected)} symbols passed liquidity filters; expected "
-                    f"{self.settings.universe_size}"
+        try:
+            parameters = self.settings.scanner_parameters()
+            previous = self.store.latest_thesisedge_universe()
+            previous_for_demo = (
+                previous
+                if (previous or {}).get("schema_version") == "thesisedge.demo-funnel.v1"
+                else None
+            )
+            protected = set(self.armed) | set(self.trades)
+            base = build_scanner_funnel(
+                tickers,
+                instruments,
+                parameters=parameters,
+                previous_snapshot=previous_for_demo,
+                protected_symbols=protected,
+                now_ms=now_ms,
+            )
+            discovery_symbols = [str(row["symbol"]) for row in base["candidate_pool"]]
+            candle_maps: dict[str, dict[str, list[Candle]]] = {
+                "240": {}, "60": {}, "15": {},
+            }
+            data_errors: dict[str, str] = {}
+            api_calls = 2
+            for symbol in discovery_symbols:
+                for interval, limit in (("240", 80), ("60", 200), ("15", 120)):
+                    try:
+                        api_calls += 1
+                        candle_maps[interval][symbol] = self.gateway.candles(symbol, interval, limit)
+                    except Exception as exc:
+                        data_errors[f"{symbol}:{interval}"] = type(exc).__name__
+                        LOGGER.warning("Funnel candles unavailable for %s %s: %s", symbol, interval, exc)
+            snapshot = build_demo_timeframe_funnel(
+                tickers,
+                instruments,
+                candles_4h=candle_maps["240"],
+                candles_1h=candle_maps["60"],
+                candles_15m=candle_maps["15"],
+                parameters=parameters,
+                previous_snapshot=previous_for_demo,
+                protected_symbols=protected,
+                now_ms=now_ms,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                api_calls=api_calls,
+                data_errors=data_errors,
+            )
+            one_hour_pool = list(snapshot.get("deep_analysis_pool") or [])
+            action_queue = list(snapshot.get("action_queue") or [])
+            selected = [str(row["symbol"]) for row in one_hour_pool]
+            self.funnel_directions = {
+                str(row["symbol"]): str(row["side"])
+                for row in one_hour_pool
+            }
+            self.funnel_entry_symbols = {str(row["symbol"]) for row in action_queue}
+            self.last_funnel_snapshot = snapshot
+            for symbol in list(self.armed):
+                if symbol in self.funnel_entry_symbols:
+                    continue
+                self.store.update_signal_journal(
+                    self.journal_ids.pop(symbol, None), symbol, "FILTERED_OUT",
+                    reason="Symbol no longer passed the 4h/1h/15m Demo funnel",
                 )
-            # Never stop monitoring a symbol that still has an open local trade.
+                self.armed.pop(symbol, None)
+                self.store.event("SIGNAL_FILTERED_OUT", symbol, stage="timeframe_funnel")
             self.symbols = list(dict.fromkeys(selected + list(self.trades)))
             self.last_universe_refresh_ms = now_ms
-            self.store.event("UNIVERSE_UPDATED", symbols=self.symbols)
-            LOGGER.info("Universe: %s", ", ".join(self.symbols))
-        if scanner_due:
+            self.last_scanner_refresh_ms = now_ms
+            self.store.record_thesisedge_universe(snapshot, mode="demo")
+            self.store.event(
+                "DEMO_TIMEFRAME_FUNNEL_UPDATED",
+                four_hour_count=snapshot["metrics"]["candidate_count"],
+                one_hour_count=snapshot["metrics"]["deep_analysis_count"],
+                fifteen_minute_count=snapshot["metrics"]["action_queue_count"],
+                symbols=self.symbols,
+                elapsed_ms=snapshot["metrics"]["elapsed_ms"],
+            )
+            LOGGER.info(
+                "Demo funnel: 4h=%s 1h=%s 15m=%s",
+                snapshot["metrics"]["candidate_count"],
+                snapshot["metrics"]["deep_analysis_count"],
+                snapshot["metrics"]["action_queue_count"],
+            )
+            self._record_phase3_portfolio(snapshot, now_ms)
+        except Exception:
+            LOGGER.exception("Demo timeframe funnel failed")
+            self.last_scanner_refresh_ms = now_ms
             try:
-                market_locations = {
-                    str(row.get("symbol") or ""): row
-                    for row in self.store.market_snapshots()
-                    if row.get("symbol")
-                }
-                snapshot = build_scanner_funnel(
-                    tickers,
-                    instruments,
-                    parameters=self.settings.scanner_parameters(),
-                    previous_snapshot=self.store.latest_thesisedge_universe(),
-                    protected_symbols=set(self.armed) | set(self.trades),
-                    market_locations=market_locations,
-                    now_ms=now_ms,
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
-                    api_calls=2,
-                )
-                self.store.record_thesisedge_universe(snapshot, mode="shadow")
-                self.store.event(
-                    "THESISEDGE_SCANNER_FUNNEL_UPDATED",
-                    candidate_count=snapshot["metrics"]["candidate_count"],
-                    deep_analysis_count=snapshot["metrics"]["deep_analysis_count"],
-                    action_queue_count=snapshot["metrics"]["action_queue_count"],
-                    churn_rate=snapshot["metrics"]["churn_rate"],
-                    elapsed_ms=snapshot["metrics"]["elapsed_ms"],
-                )
-                self._record_phase3_portfolio(snapshot, now_ms)
+                self.store.event("DEMO_TIMEFRAME_FUNNEL_ERROR")
             except Exception:
-                # Phase-2 observation must never alter the frozen V1 universe.
-                LOGGER.exception("ThesisEdge Phase-2 scanner funnel failed")
-                try:
-                    self.store.event("THESISEDGE_SCANNER_FUNNEL_ERROR")
-                except Exception:
-                    LOGGER.exception("Could not persist scanner funnel failure")
-            finally:
-                self.last_scanner_refresh_ms = now_ms
+                LOGGER.exception("Could not persist Demo funnel failure")
+            if not self.symbols:
+                raise
 
     def run_once(self) -> None:
         self.refresh_universe(force=not self.symbols)
@@ -529,18 +574,24 @@ class TradingEngine:
         return self.daily_loss
 
     def _process_symbol(self, symbol: str, last_price: float, entries_enabled: bool = True) -> None:
-        candles_5m = self.gateway.candles(symbol, "5", 120)
-        if len(candles_5m) < 30:
+        candles_15m = self.gateway.candles(symbol, ENTRY_TIMEFRAME, 120)
+        if len(candles_15m) < 30:
             return
-        latest = candles_5m[-1]
+        latest = candles_15m[-1]
         if self.last_processed_candle.get(symbol) == latest.timestamp_ms:
             return
         self.last_processed_candle[symbol] = latest.timestamp_ms
 
         candles_1h = self.gateway.candles(symbol, "60", 200)
         structure_snapshot = self._record_phase1_structure(symbol, candles_1h)
-        self._record_phase4_playbook(symbol, candles_1h, candles_5m, structure_snapshot)
+        if self.settings.v2_playbook_mode == "shadow":
+            candles_5m = self.gateway.candles(symbol, "5", 120)
+            self._record_phase4_playbook(symbol, candles_1h, candles_5m, structure_snapshot)
         context = market_context(candles_1h)
+        required_side = self.funnel_directions.get(symbol, "")
+        confirmation_15m, confirmation_strength_15m = timeframe_confirmation(
+            candles_15m, required_side
+        )
         LOGGER.info(
             "%s state=%s bias=%s close=%.8g",
             symbol,
@@ -559,14 +610,15 @@ class TradingEngine:
         visible_state = "PAUSED" if not entries_enabled else "ARMED" if symbol in self.armed else "SCAN"
         save_market(visible_state)
         decision = setup_checklist(
-            candles_5m,
+            candles_15m,
             context,
             self.settings.volume_multiplier,
             self.settings.min_reward_risk,
+            ENTRY_TIMEFRAME_LABEL,
         )
         self._record_phase0_baseline(
             symbol,
-            candles_5m,
+            candles_15m,
             candles_1h,
             context,
             decision,
@@ -585,6 +637,23 @@ class TradingEngine:
 
         armed = self.armed.get(symbol)
         if armed:
+            if armed.pattern.side != required_side or not confirmation_15m:
+                self.store.event(
+                    "SIGNAL_FILTERED_OUT",
+                    symbol,
+                    stage="15m_confirmation",
+                    required_side=required_side,
+                )
+                self.store.update_signal_journal(
+                    self.journal_ids.pop(symbol, None), symbol, "FILTERED_OUT",
+                    reason="Closed 15m confirmation no longer aligns with 4h and 1h",
+                )
+                self.armed.pop(symbol, None)
+                decision["summary"] = "Setup removed because 15m confirmation lost alignment"
+                _set_check(decision, "trigger", "fail", "15m confirmation no longer aligned")
+                self.store.decision_snapshot(symbol, decision)
+                save_market("SCAN")
+                return
             _set_check(
                 decision,
                 "pattern",
@@ -616,7 +685,7 @@ class TradingEngine:
                     self.journal_ids.pop(symbol, None), symbol, "EXPIRED", reason="Trigger window expired"
                 )
                 decision["summary"] = "Armed setup expired before the trigger break"
-                _set_check(decision, "trigger", "fail", "Trigger did not break within four 5m candles")
+                _set_check(decision, "trigger", "fail", "Trigger did not break within four 15m candles")
                 self.store.decision_snapshot(symbol, decision)
                 self.armed.pop(symbol, None)
                 save_market("SCAN")
@@ -651,7 +720,7 @@ class TradingEngine:
                         ("🕯 Pattern", armed.pattern.name.replace("_", " ")),
                         ("🛡 Invalid beyond", f"{armed.pattern.stop:.8g}"),
                     ],
-                    action="Setup removed; waiting for a new 5m confirmation",
+                    action="Setup removed; waiting for a new 15m confirmation",
                 ))
                 return
             is_later_candle = latest.timestamp_ms > armed.pattern.timestamp_ms
@@ -662,9 +731,43 @@ class TradingEngine:
             )
             if is_later_candle and triggered:
                 entry = last_price or latest.close
-                live_rr = reward_risk(entry, armed.pattern.stop, armed.target, armed.pattern.side)
+                entry_in_band = entry_within_trigger_boundary(
+                    entry,
+                    armed.pattern.trigger,
+                    armed.pattern.side,
+                    self.settings.v2_slippage_rate,
+                )
+                live_rr = net_reward_risk(
+                    entry,
+                    armed.pattern.stop,
+                    armed.target,
+                    armed.pattern.side,
+                    self.settings.v2_taker_fee_rate,
+                    self.settings.v2_slippage_rate,
+                )
                 _set_check(decision, "trigger", "pass", f"Price broke {armed.pattern.trigger:.8g}")
-                if live_rr < self.settings.min_reward_risk:
+                if not entry_in_band:
+                    self.store.event(
+                        "SIGNAL_SKIPPED_ENTRY_BOUNDARY",
+                        symbol,
+                        entry=entry,
+                        trigger=armed.pattern.trigger,
+                        side=armed.pattern.side,
+                        max_slippage_rate=self.settings.v2_slippage_rate,
+                    )
+                    self.store.update_signal_journal(
+                        self.journal_ids.pop(symbol, None), symbol, "SKIPPED_ENTRY_BOUNDARY",
+                        entry=entry, reward_risk=live_rr,
+                        reason="Live price left the trigger/slippage boundary",
+                    )
+                    decision["summary"] = "Trigger touched, but live price left the allowed entry band"
+                    _set_check(
+                        decision,
+                        "trigger",
+                        "fail",
+                        "Live price is no longer at the trigger within allowed slippage",
+                    )
+                elif live_rr < self.settings.min_reward_risk:
                     self.store.event("SIGNAL_SKIPPED_RR", symbol, entry=entry, target=armed.target)
                     self.store.update_signal_journal(
                         self.journal_ids.pop(symbol, None), symbol, "SKIPPED_RR",
@@ -682,7 +785,7 @@ class TradingEngine:
                         "Entry signal confirmed" if not self.settings.enable_order_placement
                         else "Entry confirmed — order execution requested"
                     )
-                    self._enter(symbol, armed, entry)
+                    self._enter(symbol, armed, entry, decision)
                     self.store.update_signal_journal(
                         self.journal_ids.pop(symbol, None), symbol,
                         "ENTRY_CONFIRMED" if self.settings.enable_order_placement else "SIGNAL_ONLY",
@@ -703,8 +806,36 @@ class TradingEngine:
             self.store.decision_snapshot(symbol, decision)
             return
 
-        pattern = detect_pattern(candles_5m, context, self.settings.volume_multiplier)
+        if symbol not in self.funnel_entry_symbols or not confirmation_15m:
+            decision["summary"] = "4h and 1h qualified — waiting for closed 15m confirmation"
+            _set_check(
+                decision,
+                "pattern",
+                "wait",
+                f"15m direction not confirmed for {required_side or 'this setup'}",
+            )
+            self.store.decision_snapshot(symbol, decision)
+            return
+        pattern = detect_pattern(candles_15m, context, self.settings.volume_multiplier)
         if pattern is None:
+            self.store.decision_snapshot(symbol, decision)
+            return
+        if pattern.side != required_side:
+            self.store.event(
+                "PATTERN_REJECTED_TIMEFRAME",
+                symbol,
+                pattern=pattern.name,
+                pattern_side=pattern.side,
+                required_side=required_side,
+                confirmation_strength_15m=confirmation_strength_15m,
+            )
+            decision["summary"] = "15m pattern rejected because it conflicts with higher timeframes"
+            _set_check(
+                decision,
+                "pattern",
+                "fail",
+                f"15m {pattern.side} conflicts with 4h/1h {required_side}",
+            )
             self.store.decision_snapshot(symbol, decision)
             return
         target = (
@@ -735,7 +866,7 @@ class TradingEngine:
         armed = ArmedSignal(
             pattern=pattern,
             armed_at_ms=latest.timestamp_ms,
-            expires_at_ms=latest.timestamp_ms + 4 * FIVE_MINUTES_MS,
+            expires_at_ms=latest.timestamp_ms + 4 * ENTRY_TIMEFRAME_MS,
             target=target,
         )
         self.armed[symbol] = armed
@@ -779,7 +910,117 @@ class TradingEngine:
             pattern.volume_ratio,
         )
 
-    def _enter(self, symbol: str, armed: ArmedSignal, expected_entry: float) -> None:
+    def _funnel_audit_context(self, symbol: str) -> dict[str, object]:
+        snapshot = self.last_funnel_snapshot
+        if not isinstance(snapshot, dict):
+            return {}
+        result: dict[str, object] = {
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "computed_at_ms": snapshot.get("computed_at_ms"),
+            "schema_version": snapshot.get("schema_version"),
+        }
+        for pool_name in ("candidate_pool", "deep_analysis_pool", "action_queue"):
+            rows = snapshot.get(pool_name)
+            if not isinstance(rows, list):
+                continue
+            match = next(
+                (
+                    row for row in rows
+                    if isinstance(row, dict) and str(row.get("symbol") or "") == symbol
+                ),
+                None,
+            )
+            if match is not None:
+                result[pool_name] = match
+        return result
+
+    def _trade_lifecycle(
+        self, trade: Trade, event_type: str, **payload: object
+    ) -> None:
+        if trade.trade_id:
+            self.store.record_trade_lifecycle_event(
+                trade.trade_id, trade.symbol, event_type, **payload
+            )
+
+    def _capture_trade_path(
+        self, trade: Trade, candles: list[Candle] | None = None
+    ) -> list[Candle]:
+        if not trade.trade_id:
+            return []
+        try:
+            captured = candles if candles is not None else self.gateway.candles(
+                trade.symbol, "5", 120
+            )
+            if not isinstance(captured, list):
+                return []
+            self.store.archive_trade_candles(
+                trade.trade_id, trade.symbol, "5m", captured
+            )
+            return captured
+        except Exception as exc:
+            LOGGER.exception("Trade price-path capture failed for %s", trade.symbol)
+            self._trade_lifecycle(
+                trade,
+                "PRICE_PATH_CAPTURE_ERROR",
+                error_type=type(exc).__name__,
+            )
+            return []
+
+    def _finalize_trade_path(
+        self, trade: Trade, *, exit_price: float | None = None
+    ) -> dict[str, object] | None:
+        if not trade.trade_id:
+            return None
+        self._capture_trade_path(trade)
+        try:
+            return self.store.finalize_trade_excursion(
+                trade.trade_id,
+                closed_at_ms=int(time.time() * 1000),
+                exit_price=exit_price,
+            )
+        except Exception as exc:
+            LOGGER.exception("Trade excursion calculation failed for %s", trade.symbol)
+            self._trade_lifecycle(
+                trade,
+                "EXCURSION_CALCULATION_ERROR",
+                error_type=type(exc).__name__,
+            )
+            return None
+
+    def _enter(
+        self,
+        symbol: str,
+        armed: ArmedSignal,
+        expected_entry: float,
+        decision: dict[str, object] | None = None,
+    ) -> None:
+        expected_rr = net_reward_risk(
+            expected_entry,
+            armed.pattern.stop,
+            armed.target,
+            armed.pattern.side,
+            self.settings.v2_taker_fee_rate,
+            self.settings.v2_slippage_rate,
+        )
+        expected_entry_in_band = entry_within_trigger_boundary(
+            expected_entry,
+            armed.pattern.trigger,
+            armed.pattern.side,
+            self.settings.v2_slippage_rate,
+        )
+        if not expected_entry_in_band or expected_rr < self.settings.min_reward_risk:
+            self.store.event(
+                "ENTRY_BLOCKED_PREFLIGHT",
+                symbol,
+                side=armed.pattern.side,
+                expected_entry=expected_entry,
+                trigger=armed.pattern.trigger,
+                stop=armed.pattern.stop,
+                target=armed.target,
+                net_reward_risk=expected_rr,
+                entry_in_band=expected_entry_in_band,
+            )
+            return
         if self.settings.enable_order_placement:
             daily_loss = self._check_daily_loss_limit(force=True)
             if not daily_loss.get("available") or daily_loss.get("breached"):
@@ -863,32 +1104,204 @@ class TradingEngine:
             qty_step=rules.qty_step,
             min_qty=rules.min_qty,
             max_qty=min(rules.max_market_qty, margin_qty_cap),
+            side=armed.pattern.side,
         )
         if qty <= 0:
             self.store.event("ENTRY_BLOCKED_MIN_QTY", symbol)
             return
 
-        self.gateway.set_leverage(symbol, self.settings.leverage)
         side_code = "b" if armed.pattern.side == "Buy" else "s"
         link_id = f"pa-{symbol[:8]}-{armed.pattern.timestamp_ms}-{side_code}"[:36]
-        self.store.event("ORDER_SUBMIT_REQUESTED", symbol, order_link_id=link_id, quantity=qty)
-        order_id = self.gateway.place_market_order(
+        stop_distance = abs(expected_entry - armed.pattern.stop)
+        raw_qty = equity * self.settings.risk_per_trade / stop_distance
+        effective_max_qty = min(rules.max_market_qty, margin_qty_cap)
+        snapshot: dict[str, object] = {
+            "schema_version": "thesisedge.trade-audit.v1",
+            "capture_quality": "CAPTURED",
+            "captured_at_ms": int(time.time() * 1000),
+            "symbol": symbol,
+            "side": armed.pattern.side,
+            "strategy": {
+                "direction_timeframes": ["4h", "1h"],
+                "entry_timeframe": ENTRY_TIMEFRAME_LABEL,
+                "management_timeframe": "5m",
+                "pattern": armed.pattern.name,
+                "pattern_candle_time_ms": armed.pattern.timestamp_ms,
+                "trigger": armed.pattern.trigger,
+                "stop": armed.pattern.stop,
+                "target": armed.target,
+                "volume_ratio": armed.pattern.volume_ratio,
+                "expected_net_reward_risk": expected_rr,
+            },
+            "decision": {
+                "checklist": json.loads(json.dumps(decision or {}, sort_keys=True)),
+                "funnel": self._funnel_audit_context(symbol),
+            },
+            "sizing": {
+                "equity_usdt": equity,
+                "risk_fraction": self.settings.risk_per_trade,
+                "risk_budget_usdt": equity * self.settings.risk_per_trade,
+                "expected_entry": expected_entry,
+                "stop": armed.pattern.stop,
+                "stop_distance": stop_distance,
+                "raw_quantity": raw_qty,
+                "margin_quantity_cap": margin_qty_cap,
+                "exchange_max_market_quantity": rules.max_market_qty,
+                "effective_max_quantity": effective_max_qty,
+                "quantity_step": rules.qty_step,
+                "minimum_quantity": rules.min_qty,
+                "final_quantity": qty,
+                "expected_loss_at_stop_usdt": qty * stop_distance,
+                "estimated_stop_fees_usdt": qty
+                * (expected_entry + armed.pattern.stop)
+                * self.settings.v2_taker_fee_rate,
+                "leverage": self.settings.leverage,
+                "taker_fee_rate": self.settings.v2_taker_fee_rate,
+                "slippage_rate": self.settings.v2_slippage_rate,
+            },
+            "execution": {
+                "environment": "DEMO" if self.settings.demo else "LIVE",
+                "order_link_id": link_id,
+                "order_type": "Market",
+            },
+        }
+        trade_id = str(self.store.create_trade_audit(snapshot))
+        self.store.record_trade_lifecycle_event(
+            trade_id,
             symbol,
-            armed.pattern.side,
-            qty,
-            link_id,
-            attempts=self.settings.order_retry_attempts,
+            "SETUP_FOUND",
+            occurred_at_ms=armed.pattern.timestamp_ms,
+            pattern=armed.pattern.name,
+            side=armed.pattern.side,
+            trigger=armed.pattern.trigger,
+            stop=armed.pattern.stop,
+            target=armed.target,
+        )
+        self.store.record_trade_lifecycle_event(
+            trade_id,
+            symbol,
+            "ARMED",
+            occurred_at_ms=armed.armed_at_ms,
+            expires_at_ms=armed.expires_at_ms,
+        )
+        self.store.record_trade_lifecycle_event(
+            trade_id,
+            symbol,
+            "SETUP_CAPTURED",
+            pattern=armed.pattern.name,
+            side=armed.pattern.side,
+            expected_entry=expected_entry,
+            stop=armed.pattern.stop,
+            target=armed.target,
+            final_quantity=qty,
+        )
+        self.gateway.set_leverage(symbol, self.settings.leverage)
+        self.store.update_trade_audit(
+            trade_id, "ORDER_PENDING", order_link_id=link_id
+        )
+        self.store.record_trade_lifecycle_event(
+            trade_id, symbol, "ORDER_SUBMIT_REQUESTED",
+            order_link_id=link_id, quantity=qty,
+        )
+        self.store.event("ORDER_SUBMIT_REQUESTED", symbol, order_link_id=link_id, quantity=qty)
+        try:
+            order_id = self.gateway.place_market_order(
+                symbol,
+                armed.pattern.side,
+                qty,
+                link_id,
+                attempts=self.settings.order_retry_attempts,
+            )
+        except Exception as exc:
+            self.store.record_trade_lifecycle_event(
+                trade_id, symbol, "ORDER_SUBMISSION_FAILED",
+                error_type=type(exc).__name__,
+            )
+            self.store.update_trade_audit(trade_id, "ORDER_FAILED", closed=True)
+            raise
+        self.store.update_trade_audit(
+            trade_id, "ORDER_ACCEPTED", order_link_id=link_id, order_id=order_id
+        )
+        self.store.record_trade_lifecycle_event(
+            trade_id, symbol, "ORDER_ACCEPTED",
+            order_link_id=link_id, order_id=order_id,
         )
         self.store.event("ORDER_ACCEPTED", symbol, order_link_id=link_id, order_id=order_id)
         try:
             position = self.gateway.wait_for_position(symbol)
             actual_entry = float(position["avgPrice"])
             actual_qty = float(position["size"])
+            actual_rr = net_reward_risk(
+                actual_entry,
+                armed.pattern.stop,
+                armed.target,
+                armed.pattern.side,
+                self.settings.v2_taker_fee_rate,
+                self.settings.v2_slippage_rate,
+            )
+            actual_entry_in_band = entry_within_trigger_boundary(
+                actual_entry,
+                armed.pattern.trigger,
+                armed.pattern.side,
+                self.settings.v2_slippage_rate,
+            )
+            if not actual_entry_in_band or actual_rr < self.settings.min_reward_risk:
+                close_order_id = self.gateway.close_partial(symbol, armed.pattern.side, actual_qty)
+                self.store.record_trade_lifecycle_event(
+                    trade_id, symbol, "INVALID_FILL_EXIT_REQUESTED",
+                    close_order_id=close_order_id,
+                    actual_entry=actual_entry,
+                    actual_quantity=actual_qty,
+                    net_reward_risk=actual_rr,
+                    entry_in_band=actual_entry_in_band,
+                )
+                self.store.update_trade_audit(
+                    trade_id, "INVALID_FILL_CLOSED", closed=True
+                )
+                self.store.event(
+                    "EMERGENCY_CLOSE_INVALID_FILL",
+                    symbol,
+                    order_id=order_id,
+                    actual_entry=actual_entry,
+                    trigger=armed.pattern.trigger,
+                    stop=armed.pattern.stop,
+                    target=armed.target,
+                    net_reward_risk=actual_rr,
+                    entry_in_band=actual_entry_in_band,
+                )
+                self.notifier.send(
+                    "🛑 INVALID FILL CLOSED · DEMO\n"
+                    "━━━━━━━━\n"
+                    f"📌 Pair: {symbol}\n"
+                    f"💵 Fill: {actual_entry:.8g}\n"
+                    f"🎯 Trigger: {armed.pattern.trigger:.8g}\n"
+                    f"⚖️ Net R:R: 1:{actual_rr:.2f}\n"
+                    "✅ Position was closed; invalid risk geometry was not persisted"
+                )
+                return
+            self.store.record_trade_lifecycle_event(
+                trade_id, symbol, "FILL_CONFIRMED",
+                order_id=order_id,
+                actual_entry=actual_entry,
+                actual_quantity=actual_qty,
+                net_reward_risk=actual_rr,
+                entry_in_band=actual_entry_in_band,
+            )
             # Keep only the exchange-side stop; staged targets are managed below.
             self.gateway.set_protection(symbol, armed.pattern.stop)
+            self.store.record_trade_lifecycle_event(
+                trade_id, symbol, "PROTECTION_SET", stop=armed.pattern.stop
+            )
         except Exception:
             LOGGER.exception("Protection failed after entry; emergency-closing %s", symbol)
-            self.gateway.close_partial(symbol, armed.pattern.side, qty)
+            close_order_id = self.gateway.close_partial(symbol, armed.pattern.side, qty)
+            self.store.record_trade_lifecycle_event(
+                trade_id, symbol, "EMERGENCY_CLOSE_UNPROTECTED",
+                close_order_id=close_order_id,
+            )
+            self.store.update_trade_audit(
+                trade_id, "EMERGENCY_CLOSED", order_id=order_id, closed=True
+            )
             self.store.event("EMERGENCY_CLOSE_UNPROTECTED", symbol, order_id=order_id)
             raise
 
@@ -905,9 +1318,21 @@ class TradingEngine:
             one_r_target=tp1,
             order_id=order_id,
             tp2_target=tp2,
+            trade_id=trade_id,
         )
         self.trades[symbol] = trade
         self.store.save_trade(trade)
+        self._trade_lifecycle(
+            trade,
+            "POSITION_OPENED",
+            order_id=order_id,
+            entry=actual_entry,
+            quantity=actual_qty,
+            stop=trade.stop,
+            target=trade.target,
+            one_r_target=trade.one_r_target,
+            tp2_target=trade.tp2_target,
+        )
         self.store.event("POSITION_OPENED", symbol, **{k: str(v) for k, v in trade.__dict__.items()})
         LOGGER.warning("Opened %s %s qty=%s entry=%s", trade.side, symbol, trade.qty, trade.entry)
         self.notifier.send(
@@ -982,6 +1407,9 @@ class TradingEngine:
                         entry=trade.entry,
                         protective_stop=trade.stop,
                     )
+                    self._finalize_trade_path(
+                        trade, exit_price=prices.get(symbol)
+                    )
                     self.store.close_trade(
                         symbol,
                         close_event,
@@ -1009,12 +1437,23 @@ class TradingEngine:
                     )
                     self.store.save_trade(trade)
                 management_candles = self.gateway.candles(symbol, "5", 40)
+                self._capture_trade_path(trade, management_candles)
                 reversal = detect_trade_reversal(
                     management_candles, trade.side, self.settings.volume_multiplier
                 )
                 if reversal:
                     close_qty = float(position.get("size") or trade.qty)
-                    self.gateway.close_partial(symbol, trade.side, close_qty)
+                    close_order_id = self.gateway.close_partial(symbol, trade.side, close_qty)
+                    self._trade_lifecycle(
+                        trade,
+                        "REVERSAL_EXIT_REQUESTED",
+                        close_order_id=close_order_id,
+                        quantity=close_qty,
+                        price=price,
+                        pattern=reversal["pattern"],
+                        volume_ratio=reversal["volume_ratio"],
+                        reason=reversal["reason"],
+                    )
                     self.store.event(
                         "EARLY_EXIT_REVERSAL",
                         symbol,
@@ -1023,6 +1462,7 @@ class TradingEngine:
                         volume_ratio=reversal["volume_ratio"],
                         reason=reversal["reason"],
                     )
+                    self._finalize_trade_path(trade, exit_price=price)
                     self.store.close_trade(
                         symbol,
                         "REVERSAL_EXIT",
@@ -1048,7 +1488,8 @@ class TradingEngine:
                     trade.side == "Sell" and price <= trade.one_r_target
                 )
                 if reached_one_r and not trade.partial_taken:
-                    self.gateway.close_partial(symbol, trade.side, trade.qty * 0.50)
+                    partial_qty = trade.qty * 0.50
+                    close_order_id = self.gateway.close_partial(symbol, trade.side, partial_qty)
                     fee_buffer = trade.entry * 0.0007
                     new_stop = (
                         trade.entry + fee_buffer
@@ -1060,6 +1501,20 @@ class TradingEngine:
                     trade.partial_taken = True
                     trade.state = SignalState.PARTIAL_TP
                     self.store.save_trade(trade)
+                    self._trade_lifecycle(
+                        trade,
+                        "PARTIAL_EXIT_REQUESTED",
+                        stage="TP1",
+                        close_order_id=close_order_id,
+                        quantity=partial_qty,
+                        price=price,
+                    )
+                    self._trade_lifecycle(
+                        trade,
+                        "PROTECTIVE_STOP_MOVED",
+                        reason="TP1_REACHED",
+                        stop=new_stop,
+                    )
                     self.store.event("PARTIAL_TP", symbol, price=price, new_stop=new_stop)
                     self.notifier.send(
                         "💰 TP1 HIT · 50% CLOSED\n"
@@ -1076,10 +1531,19 @@ class TradingEngine:
                     trade.side == "Sell" and price <= trade.tp2_target
                 )
                 if trade.partial_taken and reached_tp2 and not trade.tp2_taken:
-                    self.gateway.close_partial(symbol, trade.side, trade.qty * 0.30)
+                    partial_qty = trade.qty * 0.30
+                    close_order_id = self.gateway.close_partial(symbol, trade.side, partial_qty)
                     trade.tp2_taken = True
                     trade.state = SignalState.PARTIAL_TP
                     self.store.save_trade(trade)
+                    self._trade_lifecycle(
+                        trade,
+                        "PARTIAL_EXIT_REQUESTED",
+                        stage="TP2",
+                        close_order_id=close_order_id,
+                        quantity=partial_qty,
+                        price=price,
+                    )
                     self.store.event("PARTIAL_TP2", symbol, price=price, qty_fraction=0.30)
                     self.notifier.send(
                         "💰 TP2 HIT · 30% CLOSED\n"
@@ -1096,9 +1560,18 @@ class TradingEngine:
                 )
                 if trade.tp2_taken and reached_tp3 and not trade.tp3_taken:
                     remaining_qty = float(position.get("size") or trade.qty * 0.20)
-                    self.gateway.close_partial(symbol, trade.side, remaining_qty)
+                    close_order_id = self.gateway.close_partial(symbol, trade.side, remaining_qty)
+                    self._trade_lifecycle(
+                        trade,
+                        "FINAL_EXIT_REQUESTED",
+                        stage="TP3",
+                        close_order_id=close_order_id,
+                        quantity=remaining_qty,
+                        price=price,
+                    )
                     trade.tp3_taken = True
                     self.store.save_trade(trade)
+                    self._finalize_trade_path(trade, exit_price=price)
                     self.store.close_trade(
                         symbol,
                         "TP3_COMPLETE",
@@ -1142,6 +1615,13 @@ class TradingEngine:
                             trade.stop = candidate
                             trade.state = SignalState.TRAILING
                             self.store.save_trade(trade)
+                            self._trade_lifecycle(
+                                trade,
+                                "PROTECTIVE_STOP_MOVED",
+                                reason="TRAILING_STRUCTURE",
+                                stop=candidate,
+                                market_price=price,
+                            )
                             self.store.event("TRAILING_STOP_MOVED", symbol, stop=candidate)
                             self.notifier.send(format_alert(
                                 "🔒 TRAILING STOP UPDATED",
@@ -1185,6 +1665,12 @@ class TradingEngine:
         for symbol, trade in list(self.trades.items()):
             position = exchange_positions.get(symbol)
             if not position:
+                self._trade_lifecycle(
+                    trade,
+                    "EXCHANGE_POSITION_MISSING",
+                    local_state=trade.state.value,
+                )
+                self._finalize_trade_path(trade)
                 self.store.close_trade(
                     symbol,
                     "EXCHANGE_RECONCILIATION",
@@ -1259,6 +1745,12 @@ class TradingEngine:
                     local_qty=old_qty,
                     exchange_qty=exchange_qty,
                 )
+                self._trade_lifecycle(
+                    trade,
+                    "POSITION_QUANTITY_RECONCILED",
+                    local_quantity=old_qty,
+                    exchange_quantity=exchange_qty,
+                )
             exchange_stop = float(position.get("stopLoss") or 0)
             if exchange_stop > 0 and abs(exchange_stop - trade.stop) > max(1e-12, exchange_stop * 1e-8):
                 old_stop = trade.stop
@@ -1267,6 +1759,12 @@ class TradingEngine:
                 self.store.event(
                     "POSITION_STOP_RECONCILED",
                     symbol,
+                    local_stop=old_stop,
+                    exchange_stop=exchange_stop,
+                )
+                self._trade_lifecycle(
+                    trade,
+                    "PROTECTIVE_STOP_RECONCILED",
                     local_stop=old_stop,
                     exchange_stop=exchange_stop,
                 )
@@ -1309,6 +1807,33 @@ class TradingEngine:
             str(row.get("orderId") or f"{row.get('symbol')}:{row.get('updatedTime')}:{row.get('closedPnl')}")
             for row in rows
         }
+        for row in rows:
+            symbol = str(row.get("symbol") or "")
+            identity = str(
+                row.get("orderId")
+                or f"{symbol}:{row.get('updatedTime')}:{row.get('closedPnl')}"
+            )
+            occurred_at_ms = int(row.get("updatedTime") or now_ms)
+            avg_entry = float(row.get("avgEntryPrice") or 0)
+            trade_id = self.store.match_trade_audit(
+                symbol, avg_entry, occurred_at_ms
+            )
+            if trade_id:
+                self.store.record_trade_lifecycle_event(
+                    trade_id,
+                    symbol,
+                    "EXCHANGE_EXIT_CONFIRMED",
+                    occurred_at_ms=occurred_at_ms,
+                    external_event_id=f"bybit-closed-pnl:{identity}",
+                    order_id=identity,
+                    side=row.get("side"),
+                    quantity=row.get("qty"),
+                    avg_entry=row.get("avgEntryPrice"),
+                    avg_exit=row.get("avgExitPrice"),
+                    closed_pnl=float(row.get("closedPnl") or 0),
+                    fees=abs(float(row.get("openFee") or 0))
+                    + abs(float(row.get("closeFee") or 0)),
+                )
         if initialize:
             self.notified_closed_pnl_ids.update(identities)
             return

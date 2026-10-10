@@ -2,13 +2,13 @@
 
 Single-worker Bybit USDT perpetual bot. It runs in **signal-only mode by default** and uses Bybit Demo Trading when order placement is enabled.
 
-The repository also includes an authenticated web dashboard with real Bybit candlestick/volume charts, 1h support/resistance overlays, a selectable 10-symbol watchlist, worker health, positions, history, strategy settings, and pausing/resuming new entries.
+The repository also includes an authenticated web dashboard with real Bybit 5m, 15m, 1h, and 4h candlestick/volume charts, 1h support/resistance overlays, a dynamic watchlist of up to 10 aligned symbols, worker health, positions, history, strategy settings, and pausing/resuming new entries.
 
 ## V2 locked roadmap
 
 The approved V2 direction is documented as **ThesisEdge V2 — Context-Aware Price-Action Intelligence Engine**. Its locked architecture, safety boundaries, phased implementation gates, verification requirements, and change-control policy are in [`docs/THESISEDGE_V2_MASTER_PLAN.md`](docs/THESISEDGE_V2_MASTER_PLAN.md). Implementation status is tracked separately in [`docs/THESISEDGE_V2_PROGRESS.md`](docs/THESISEDGE_V2_PROGRESS.md).
 
-Phase 0 adds append-only, deduplicated candle archives and versioned V1 decision records for deterministic replay. It does not change V1 signals, order sizing, entries, exits, or risk rules. All V2 modules accept only `off` or `shadow` mode and have no execution-authority state. Replay recent stored decisions locally without contacting Bybit:
+Phase 0 adds append-only, deduplicated candle archives and versioned V1 decision records for deterministic replay. It does not change the 5m signal, order sizing, entry, exit, or risk rules. Structure, portfolio, playbook, thesis, and management modules remain `off`/`shadow` only. The universe module was later explicitly promoted to Demo selection authority; it still has no Live authority. Replay recent stored decisions locally without contacting Bybit:
 
 ```powershell
 python -m price_action_bot --replay-v1 100
@@ -16,7 +16,7 @@ python -m price_action_bot --replay-v1 100
 
 Phase 1 adds a closed-candle, non-repainting market-structure map in `shadow` mode. It records major/internal swings, HH/HL or LH/LL state, protected levels, zone lifecycle, BOS/CHoCH, sweeps, and failed breaks. Enable or hide its chart evidence with the `V2 Structure` layer. The provisional parameters and required human exit review are documented in [`docs/THESISEDGE_PHASE1_REVIEW.md`](docs/THESISEDGE_PHASE1_REVIEW.md).
 
-Phase 2 adds a separate Dynamic Scanner Funnel in `shadow` mode. It pre-screens eligible Bybit linear USDT perpetuals for listing age, liquidity, open interest, spread, and abnormal 24h movement; keeps a stable candidate pool with entry/exit hysteresis; then prioritizes symbols near known market-structure locations into deep-analysis and action queues. Armed/open symbols remain tracked. The funnel is observation-only: it does not replace the frozen V1 10-symbol execution universe and cannot place or influence orders. Its current metrics and exclusions are visible on the System page. The provisional contract and exit review are documented in [`docs/THESISEDGE_PHASE2_REVIEW.md`](docs/THESISEDGE_PHASE2_REVIEW.md).
+Phase 2 began as a separate shadow scanner and was explicitly promoted on 2026-10-08 to the single active selector for Bybit Demo. It pre-screens eligible linear USDT perpetuals, ranks up to 20 liquid candidates on closed 4h direction, and keeps up to 10 whose closed 1h direction agrees. The old fixed daily selector was removed. As of 2026-10-11, closed 15m candles own both final directional confirmation and the entry pattern/next-candle trigger; fee/slippage-adjusted minimum `2R`, position-risk, and execution safety gates still decide whether a Demo order can be placed. Current metrics and exclusions are visible on the System page. The original shadow review and promotion amendment are documented in [`docs/THESISEDGE_PHASE2_REVIEW.md`](docs/THESISEDGE_PHASE2_REVIEW.md).
 
 Phase 3 adds an observation-only Portfolio Map from closed 1h returns. It records BTC beta/correlation, dynamic correlation clusters, data-confidence labels, relative strength, and effective open/armed exposure. Healthy same-direction opportunities in one cluster are ranked so only the highest quality is selected at the normal configured 1% risk; correlated peers and unresolved data receive 0% shadow risk. It cannot change V1 or place orders. The provisional contract and pending live review are documented in [`docs/THESISEDGE_PHASE3_REVIEW.md`](docs/THESISEDGE_PHASE3_REVIEW.md).
 
@@ -24,14 +24,17 @@ Phase 4 adds a shadow Regime/Location context and three explicit playbooks: Tren
 
 ## Strategy implemented
 
-1. Refresh a 10-symbol universe daily. `BTCUSDT` and `ETHUSDT` stay fixed; the other eight are ranked by 24h turnover, open interest and bid/ask spread. Listings younger than 30 days and non-standard underlyings are excluded.
-2. Use closed 1h candles to classify higher-high/higher-low, lower-high/lower-low, or range structure and create confirmed swing support/resistance zones.
-3. At a matching zone, inspect closed 5m candles for bullish/bearish pin bars, engulfing patterns, morning/evening stars, or tweezer bottoms/tops.
-4. Require confirmation-candle volume to be at least `1.2 ×` the previous 20 closed 5m candles' average.
-5. Arm the signal for the next three 5m candles. Enter only after the pattern high/low breaks and the next 1h target still offers at least `1.5R`.
-6. Risk `1%` of equity per trade. At `+1R`, close 50% and move the stop to entry plus an estimated fee buffer. After `+1.5R`, trail behind recent closed 5m candles.
+1. Pre-screen eligible Bybit linear USDT perpetuals for listing age, turnover, open interest, spread, and abnormal movement; then rank up to 20 on closed 4h directional strength. The pool is a ceiling and is never padded with weak symbols.
+2. Keep up to 10 symbols only when closed 1h structure agrees with the 4h direction and a relevant confirmed 1h support/resistance zone exists.
+3. Require closed 15m confirmation in the same direction: the 5-candle mean must be on the correct side of the 20-candle mean and the latest close must continue in that direction.
+4. For a symbol whose closed 4h and 1h direction agree at the matching 1h zone, inspect closed 15m candles for bullish/bearish pin bars, engulfing patterns, morning/evening stars, or tweezer bottoms/tops.
+5. Require confirmation-candle volume to be at least `1.2 ×` the previous 20 closed 15m candles' average.
+6. Arm the signal for up to four closed 15m candles. Enter only after a later 15m candle breaks the pattern high/low and the next 1h target still offers at least `2R` after modeled fees and slippage.
+7. Risk `1%` of equity per trade. At `+1R`, close 50% and move the stop to entry plus an estimated fee buffer. After `+1.5R`, trail behind recent closed 5m candles.
 
 All thresholds are environment settings and should be changed only after reviewing demo results.
+
+The active timeframe funnel may perform dozens of read-only market-data requests per refresh. Its operational latency threshold is 15 seconds; exceeding that threshold is surfaced as attention and never bypasses an entry or risk gate.
 
 ## Windows setup
 
@@ -64,6 +67,53 @@ uvicorn price_action_bot.web:app --reload
 Open `http://127.0.0.1:8000` and sign in with the dashboard username/password. Pausing from the dashboard blocks new entries while existing positions continue to be managed.
 
 Events are recorded in `trading_bot.db`. Stop the process with `Ctrl+C`.
+
+Every new Demo entry attempt also receives a stable `trade_id`. Its 4h/1h/15m
+decision evidence and complete position-sizing calculation are stored once in
+`trade_audits` and are never overwritten. `trade_lifecycle_events` appends the
+setup, order, fill, protection, partial-exit, stop-change, local-close, and
+Bybit-confirmed exit events under that same ID. Bybit exit identities are
+persistently deduplicated, so a worker restart does not turn one partial exit
+into multiple audit events. These tables are the data foundation for the
+planned clickable Trade Replay UI; they do not add order authority or alter the
+entry, exit, or risk rules.
+
+While a captured trade is open, closed 5m management candles are appended to
+`trade_price_candles`. At close, `trade_excursions` records side-aware maximum
+favorable excursion (MFE), maximum adverse excursion (MAE), their timestamps,
+percentage and initial-risk multiples, target progress, duration, and a data
+quality label. This preserves how far price moved in favor before a stop or
+other exit; the replay chart and human-readable verdict remain later UI steps.
+
+Authenticated read-only forensic endpoints expose the captured evidence:
+`GET /api/trades/audits`, `GET /api/trades/{trade_id}/audit`,
+`GET /api/trades/{trade_id}/events`, and
+`GET /api/trades/{trade_id}/candles`. They read only the local audit database
+and never call an order create, modify, or close operation.
+
+Closed local trades with a captured `trade_id` link to `/trades/{trade_id}`.
+The authenticated read-only replay renders the archived 5m candle path with
+entry, initial stop, target, exit, MFE/MAE levels and lifecycle markers, plus
+the immutable thesis and position-sizing inputs. Legacy rows remain visible but
+are explicitly labelled unavailable when their evidence was never captured.
+
+The replay also shows a deterministic `trade-diagnosis-1.0` verdict generated
+only from captured evidence. It checks timeframe alignment, entry slippage,
+net 1:2 reward-to-risk, risk-budget/quantity arithmetic, and whether a losing
+trade gave back at least +1R without captured protection. Verdicts are
+`GOOD_TRADE`, `VALID_LOSS`, `EXECUTION_ISSUE`, `RISK_ISSUE`, `EXIT_ISSUE`, or
+`INSUFFICIENT_DATA`. The diagnosis is read-only and has no strategy, risk-gate,
+or order authority. It explicitly leaves initial-stop tight/wide quality
+unknown when pre-entry ATR/context was not archived.
+
+The Trade Audit page also exposes the read-only
+`trade-diagnosis-report-1.0` cross-trade report. It ranks recurring issue codes,
+shows verdict distribution, and compares symbols plus captured playbooks or
+fallback strategy patterns. Group issue rates stay unavailable until at least
+five conclusive captured trades exist, and incomplete legacy evidence remains
+separate from conclusive diagnoses. `GET /api/trades/diagnosis-report` exposes
+the same local-only report for a selected period and optional symbol; it does
+not infer profitability or causality and has no trading authority.
 
 View the local status without contacting Bybit:
 

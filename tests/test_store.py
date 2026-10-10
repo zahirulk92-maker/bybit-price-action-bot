@@ -1,8 +1,9 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
-from price_action_bot.models import SignalState, Trade
+from price_action_bot.models import Candle, SignalState, Trade
 from price_action_bot.store import Store
 
 
@@ -35,6 +36,197 @@ class StoreTests(unittest.TestCase):
         closed = next(row for row in history if row["status"] == "closed")
         self.assertEqual(closed["trade"]["close_reason"], "REVERSAL_EXIT")
         self.assertEqual(closed["trade"]["close_details"]["pattern"], "bearish_engulfing")
+
+    def test_trade_audit_snapshot_is_immutable_and_lifecycle_is_append_only(self):
+        snapshot = {
+            "schema_version": "thesisedge.trade-audit.v1",
+            "symbol": "BTCUSDT",
+            "side": "Buy",
+            "decision": {"pattern": "bullish_engulfing"},
+            "sizing": {"risk_budget_usdt": 10.0, "final_quantity": 2.0},
+        }
+        trade_id = self.store.create_trade_audit(snapshot, "ta-fixed")
+        changed = {**snapshot, "sizing": {"risk_budget_usdt": 999.0}}
+        self.store.create_trade_audit(changed, "ta-fixed")
+        self.store.record_trade_lifecycle_event(
+            trade_id, "BTCUSDT", "ORDER_ACCEPTED", order_id="entry-1"
+        )
+        trade = Trade(
+            "BTCUSDT", "Buy", 2.0, 100, 95, 115, 105,
+            order_id="entry-1", trade_id=trade_id,
+        )
+        self.store.save_trade(trade)
+        self.store.close_trade("BTCUSDT", "TP3_COMPLETE", price=115)
+
+        audit = self.store.trade_audit(trade_id)
+
+        self.assertIsNotNone(audit)
+        self.assertEqual(audit["snapshot"]["sizing"]["risk_budget_usdt"], 10.0)
+        self.assertEqual(audit["status"], "CLOSED")
+        self.assertGreater(audit["closed_at_ms"], 0)
+        self.assertEqual(
+            [event["event_type"] for event in audit["events"]],
+            ["ORDER_ACCEPTED", "CLOSED_LOCAL"],
+        )
+        self.assertEqual(audit["events"][1]["payload"]["reason"], "TP3_COMPLETE")
+
+    def test_exchange_exit_matches_fill_and_is_deduplicated(self):
+        snapshot = {
+            "symbol": "BTCUSDT", "side": "Buy", "decision": {}, "sizing": {},
+        }
+        trade_id = self.store.create_trade_audit(snapshot, "ta-match")
+        opened_at_ms = self.store.trade_audit(trade_id)["opened_at_ms"]
+        self.store.record_trade_lifecycle_event(
+            trade_id, "BTCUSDT", "FILL_CONFIRMED", actual_entry=100.0
+        )
+
+        matched = self.store.match_trade_audit("BTCUSDT", 100.1, opened_at_ms + 1)
+        for _ in range(2):
+            self.store.record_trade_lifecycle_event(
+                matched,
+                "BTCUSDT",
+                "EXCHANGE_EXIT_CONFIRMED",
+                external_event_id="bybit-closed-pnl:exit-1",
+                closed_pnl=1.0,
+            )
+
+        audit = self.store.trade_audit(trade_id)
+        exit_events = [
+            event for event in audit["events"]
+            if event["event_type"] == "EXCHANGE_EXIT_CONFIRMED"
+        ]
+        self.assertEqual(matched, trade_id)
+        self.assertEqual(len(exit_events), 1)
+
+    def test_recent_trade_audits_filters_and_summarizes_evidence(self):
+        btc_id = self.store.create_trade_audit(
+            {
+                "symbol": "BTCUSDT", "side": "Buy", "decision": {}, "sizing": {},
+            },
+            "ta-btc",
+        )
+        self.store.record_trade_lifecycle_event(btc_id, "BTCUSDT", "SETUP_FOUND")
+        self.store.archive_trade_candles(
+            btc_id,
+            "BTCUSDT",
+            "5m",
+            [Candle(1_000, 100, 101, 99, 100.5, 5)],
+        )
+        self.store.create_trade_audit(
+            {
+                "symbol": "ETHUSDT", "side": "Sell", "decision": {}, "sizing": {},
+            },
+            "ta-eth",
+        )
+
+        rows = self.store.recent_trade_audits(symbol="BTCUSDT")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["trade_id"], "ta-btc")
+        self.assertEqual(rows[0]["snapshot"]["side"], "Buy")
+        self.assertEqual(rows[0]["event_count"], 1)
+        self.assertEqual(rows[0]["captured_candle_count"], 1)
+        self.assertFalse(rows[0]["excursion_available"])
+
+    def test_buy_excursion_reports_pre_stop_peak_and_adverse_move(self):
+        snapshot = {
+            "symbol": "BTCUSDT", "side": "Buy", "decision": {}, "sizing": {},
+            "strategy": {"stop": 95.0, "target": 110.0},
+        }
+        trade_id = self.store.create_trade_audit(snapshot, "ta-buy-path")
+        self.store.record_trade_lifecycle_event(
+            trade_id,
+            "BTCUSDT",
+            "FILL_CONFIRMED",
+            occurred_at_ms=1_000,
+            actual_entry=100.0,
+        )
+        self.store.archive_trade_candles(
+            trade_id,
+            "BTCUSDT",
+            "5m",
+            [
+                Candle(1_000, 100, 106, 98, 104, 10),
+                Candle(2_000, 104, 105, 94, 95, 12),
+            ],
+        )
+
+        result = self.store.finalize_trade_excursion(
+            trade_id, closed_at_ms=3_000, exit_price=95.0
+        )
+
+        self.assertEqual(result["captured_candle_count"], 2)
+        self.assertEqual(len(self.store.trade_candles(trade_id)), 2)
+        self.assertEqual(result["mfe_price"], 106.0)
+        self.assertEqual(result["mae_price"], 94.0)
+        self.assertAlmostEqual(result["mfe_r"], 1.2)
+        self.assertAlmostEqual(result["mae_r"], 1.2)
+        self.assertAlmostEqual(result["target_progress_percent"], 60.0)
+        self.assertEqual(
+            self.store.trade_audit(trade_id)["excursion"]["data_quality"],
+            "CLOSED_CANDLE_PATH",
+        )
+
+    def test_sell_excursion_is_directionally_symmetric(self):
+        snapshot = {
+            "symbol": "ETHUSDT", "side": "Sell", "decision": {}, "sizing": {},
+            "strategy": {"stop": 105.0, "target": 90.0},
+        }
+        trade_id = self.store.create_trade_audit(snapshot, "ta-sell-path")
+        self.store.record_trade_lifecycle_event(
+            trade_id,
+            "ETHUSDT",
+            "FILL_CONFIRMED",
+            occurred_at_ms=1_000,
+            actual_entry=100.0,
+        )
+        self.store.archive_trade_candles(
+            trade_id,
+            "ETHUSDT",
+            "5m",
+            [Candle(1_000, 100, 103, 94, 96, 10)],
+        )
+
+        result = self.store.finalize_trade_excursion(
+            trade_id, closed_at_ms=2_000, exit_price=96.0
+        )
+
+        self.assertEqual(result["mfe_price"], 94.0)
+        self.assertEqual(result["mae_price"], 103.0)
+        self.assertAlmostEqual(result["mfe_r"], 1.2)
+        self.assertAlmostEqual(result["mae_r"], 0.6)
+
+    def test_additive_migration_upgrades_early_lifecycle_table(self):
+        path = Path(self.temp_dir.name) / "legacy-audit.db"
+        connection = sqlite3.connect(path)
+        connection.execute(
+            """CREATE TABLE trade_lifecycle_events (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id TEXT NOT NULL,
+                   symbol TEXT NOT NULL, event_type TEXT NOT NULL,
+                   occurred_at_ms BIGINT NOT NULL, payload TEXT NOT NULL
+               )"""
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = Store(str(path))
+        columns = migrated._execute(
+            "PRAGMA table_info(trade_lifecycle_events)", fetch="all"
+        )
+        migrated.connection.close()
+
+        self.assertIn("external_event_id", {dict(row)["name"] for row in columns})
+
+    def test_trade_id_survives_worker_restart_round_trip(self):
+        trade = Trade(
+            "ETHUSDT", "Sell", 1.0, 100, 105, 90, 95,
+            trade_id="ta-restart",
+        )
+        self.store.save_trade(trade)
+
+        loaded = self.store.load_open_trades()["ETHUSDT"]
+
+        self.assertEqual(loaded.trade_id, "ta-restart")
 
     def test_decision_checklist_round_trip(self):
         decision = {

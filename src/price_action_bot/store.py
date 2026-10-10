@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,21 @@ class Store:
                 self.connection.executemany(statement, params)
                 self.connection.commit()
 
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        """Apply a small additive migration for both SQLite and Postgres."""
+        if self._postgres:
+            exists = self._execute(
+                """SELECT 1 FROM information_schema.columns
+                   WHERE table_schema=current_schema() AND table_name=? AND column_name=?""",
+                (table, column),
+                fetch="one",
+            )
+        else:
+            rows = self._execute(f"PRAGMA table_info({table})", fetch="all")
+            exists = any(str(self._dict(row).get("name")) == column for row in rows)
+        if not exists:
+            self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
     def _init_schema(self) -> None:
         id_column = "BIGSERIAL PRIMARY KEY" if self._postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
         statements = [
@@ -101,6 +117,41 @@ class Store:
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_signal_journal_updated ON signal_journal(updated_at_ms)",
+            """
+            CREATE TABLE IF NOT EXISTS trade_audits (
+                trade_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT NOT NULL,
+                status TEXT NOT NULL, order_link_id TEXT NOT NULL DEFAULT '',
+                order_id TEXT NOT NULL DEFAULT '', opened_at_ms BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL, closed_at_ms BIGINT,
+                snapshot_payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_trade_audits_symbol_time "
+            "ON trade_audits(symbol, opened_at_ms)",
+            f"""
+            CREATE TABLE IF NOT EXISTS trade_lifecycle_events (
+                id {id_column}, trade_id TEXT NOT NULL, symbol TEXT NOT NULL,
+                event_type TEXT NOT NULL, occurred_at_ms BIGINT NOT NULL,
+                external_event_id TEXT, payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_trade_lifecycle_events_trade "
+            "ON trade_lifecycle_events(trade_id, occurred_at_ms, id)",
+            """
+            CREATE TABLE IF NOT EXISTS trade_price_candles (
+                trade_id TEXT NOT NULL, symbol TEXT NOT NULL, interval TEXT NOT NULL,
+                timestamp_ms BIGINT NOT NULL, open DOUBLE PRECISION NOT NULL,
+                high DOUBLE PRECISION NOT NULL, low DOUBLE PRECISION NOT NULL,
+                close DOUBLE PRECISION NOT NULL, volume DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY(trade_id, interval, timestamp_ms)
+            )
+            """,
+            f"""
+            CREATE TABLE IF NOT EXISTS trade_excursions (
+                id {id_column}, trade_id TEXT NOT NULL UNIQUE,
+                calculated_at_ms BIGINT NOT NULL, payload TEXT NOT NULL
+            )
+            """,
             """
             CREATE TABLE IF NOT EXISTS thesisedge_candles (
                 symbol TEXT NOT NULL, interval TEXT NOT NULL, timestamp_ms BIGINT NOT NULL,
@@ -163,6 +214,11 @@ class Store:
         ]
         for statement in statements:
             self._execute(statement)
+        self._ensure_column("trade_lifecycle_events", "external_event_id", "TEXT")
+        self._execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_lifecycle_external_event "
+            "ON trade_lifecycle_events(external_event_id)"
+        )
         now = int(time.time() * 1000)
         if self._execute("SELECT id FROM bot_control WHERE id=1", fetch="one") is None:
             self._execute(
@@ -260,6 +316,388 @@ class Store:
             result.append(item)
         return result
 
+    def create_trade_audit(
+        self, snapshot: dict[str, object], trade_id: str = ""
+    ) -> str:
+        """Persist the immutable facts used to authorize one entry attempt."""
+        required = ("symbol", "side", "decision", "sizing")
+        missing = [key for key in required if key not in snapshot]
+        if missing:
+            raise ValueError(f"Trade audit snapshot missing: {', '.join(missing)}")
+        trade_id = trade_id or f"ta-{uuid.uuid4().hex}"
+        now = int(time.time() * 1000)
+        self._execute(
+            """INSERT INTO trade_audits
+               (trade_id, symbol, side, status, opened_at_ms, updated_at_ms,
+                snapshot_payload)
+               VALUES (?, ?, ?, 'ENTRY_PENDING', ?, ?, ?)
+               ON CONFLICT(trade_id) DO NOTHING""",
+            (
+                trade_id,
+                str(snapshot["symbol"]),
+                str(snapshot["side"]),
+                now,
+                now,
+                json.dumps(snapshot, sort_keys=True),
+            ),
+        )
+        return trade_id
+
+    def record_trade_lifecycle_event(
+        self,
+        trade_id: str,
+        symbol: str,
+        event_type: str,
+        *,
+        occurred_at_ms: int | None = None,
+        external_event_id: str | None = None,
+        **payload: object,
+    ) -> None:
+        if not trade_id:
+            return
+        self._execute(
+            """INSERT INTO trade_lifecycle_events
+               (trade_id, symbol, event_type, occurred_at_ms, external_event_id, payload)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(external_event_id) DO NOTHING""",
+            (
+                trade_id,
+                symbol,
+                event_type,
+                int(occurred_at_ms or time.time() * 1000),
+                external_event_id,
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+
+    def update_trade_audit(
+        self,
+        trade_id: str,
+        status: str,
+        *,
+        order_link_id: str | None = None,
+        order_id: str | None = None,
+        closed: bool = False,
+    ) -> None:
+        """Update lifecycle metadata without modifying the decision snapshot."""
+        if not trade_id:
+            return
+        now = int(time.time() * 1000)
+        self._execute(
+            """UPDATE trade_audits
+               SET status=?, order_link_id=COALESCE(?, order_link_id),
+                   order_id=COALESCE(?, order_id), updated_at_ms=?,
+                   closed_at_ms=CASE WHEN ?=1 THEN ? ELSE closed_at_ms END
+               WHERE trade_id=?""",
+            (
+                status,
+                order_link_id,
+                order_id,
+                now,
+                1 if closed else 0,
+                now,
+                trade_id,
+            ),
+        )
+
+    def trade_audit(self, trade_id: str) -> dict[str, Any] | None:
+        row = self._execute(
+            """SELECT trade_id, symbol, side, status, order_link_id, order_id,
+                      opened_at_ms, updated_at_ms, closed_at_ms, snapshot_payload
+               FROM trade_audits WHERE trade_id=?""",
+            (trade_id,),
+            fetch="one",
+        )
+        if row is None:
+            return None
+        result = self._dict(row)
+        result["snapshot"] = json.loads(result.pop("snapshot_payload"))
+        event_rows = self._execute(
+            """SELECT id, event_type, occurred_at_ms, external_event_id, payload
+               FROM trade_lifecycle_events WHERE trade_id=?
+               ORDER BY occurred_at_ms, id""",
+            (trade_id,),
+            fetch="all",
+        )
+        result["events"] = []
+        for event_row in event_rows:
+            event = self._dict(event_row)
+            event["payload"] = json.loads(event["payload"])
+            result["events"].append(event)
+        excursion = self._execute(
+            "SELECT payload FROM trade_excursions WHERE trade_id=?",
+            (trade_id,),
+            fetch="one",
+        )
+        result["excursion"] = (
+            json.loads(self._dict(excursion)["payload"])
+            if excursion is not None
+            else None
+        )
+        return result
+
+    def recent_trade_audits(
+        self,
+        limit: int = 50,
+        *,
+        symbol: str = "",
+        status: str = "",
+    ) -> list[dict[str, Any]]:
+        """Return recent immutable audit snapshots without expanding lifecycle rows."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if symbol:
+            clauses.append("audit.symbol=?")
+            params.append(symbol.upper())
+        if status:
+            clauses.append("audit.status=?")
+            params.append(status.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 200)))
+        rows = self._execute(
+            f"""SELECT audit.trade_id, audit.symbol, audit.side, audit.status,
+                       audit.order_link_id, audit.order_id, audit.opened_at_ms,
+                       audit.updated_at_ms, audit.closed_at_ms, audit.snapshot_payload,
+                       (SELECT COUNT(*) FROM trade_lifecycle_events event
+                        WHERE event.trade_id=audit.trade_id) AS event_count,
+                       (SELECT COUNT(*) FROM trade_price_candles candle
+                        WHERE candle.trade_id=audit.trade_id) AS captured_candle_count,
+                       (SELECT COUNT(*) FROM trade_excursions excursion
+                        WHERE excursion.trade_id=audit.trade_id) AS excursion_count
+                FROM trade_audits audit
+                {where}
+                ORDER BY audit.opened_at_ms DESC
+                LIMIT ?""",
+            tuple(params),
+            fetch="all",
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._dict(row)
+            item["snapshot"] = json.loads(item.pop("snapshot_payload"))
+            item["event_count"] = int(item["event_count"] or 0)
+            item["captured_candle_count"] = int(
+                item["captured_candle_count"] or 0
+            )
+            item["excursion_available"] = bool(item.pop("excursion_count") or 0)
+            result.append(item)
+        return result
+
+    def archive_trade_candles(
+        self,
+        trade_id: str,
+        symbol: str,
+        interval: str,
+        candles: list[Candle],
+    ) -> None:
+        if not trade_id:
+            return
+        self._executemany(
+            """INSERT INTO trade_price_candles
+               (trade_id, symbol, interval, timestamp_ms, open, high, low, close, volume)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(trade_id, interval, timestamp_ms) DO NOTHING""",
+            [
+                (
+                    trade_id,
+                    symbol,
+                    interval,
+                    candle.timestamp_ms,
+                    candle.open,
+                    candle.high,
+                    candle.low,
+                    candle.close,
+                    candle.volume,
+                )
+                for candle in candles
+            ],
+        )
+
+    def trade_candles(
+        self, trade_id: str, interval: str = "5m"
+    ) -> list[Candle]:
+        rows = self._execute(
+            """SELECT timestamp_ms, open, high, low, close, volume
+               FROM trade_price_candles
+               WHERE trade_id=? AND interval=? ORDER BY timestamp_ms""",
+            (trade_id, interval),
+            fetch="all",
+        )
+        return [
+            Candle(
+                timestamp_ms=int(self._dict(row)["timestamp_ms"]),
+                open=float(self._dict(row)["open"]),
+                high=float(self._dict(row)["high"]),
+                low=float(self._dict(row)["low"]),
+                close=float(self._dict(row)["close"]),
+                volume=float(self._dict(row)["volume"]),
+            )
+            for row in rows
+        ]
+
+    def finalize_trade_excursion(
+        self,
+        trade_id: str,
+        *,
+        closed_at_ms: int | None = None,
+        exit_price: float | None = None,
+    ) -> dict[str, object] | None:
+        """Calculate deterministic MFE/MAE from the captured post-fill candle path."""
+        audit = self.trade_audit(trade_id)
+        if audit is None:
+            return None
+        fill_event = next(
+            (
+                event for event in audit["events"]
+                if event["event_type"] == "FILL_CONFIRMED"
+            ),
+            None,
+        )
+        if fill_event is None:
+            return None
+        entry = float(fill_event["payload"].get("actual_entry") or 0)
+        if entry <= 0:
+            return None
+        entry_time_ms = int(fill_event["occurred_at_ms"])
+        close_time_ms = int(closed_at_ms or time.time() * 1000)
+        rows = self._execute(
+            """SELECT timestamp_ms, high, low, close
+               FROM trade_price_candles
+               WHERE trade_id=? AND interval='5m'
+                 AND timestamp_ms>=? AND timestamp_ms<=?
+               ORDER BY timestamp_ms""",
+            (trade_id, entry_time_ms, close_time_ms),
+            fetch="all",
+        )
+        points = [self._dict(row) for row in rows]
+        side = str(audit["side"])
+        highest_price = entry
+        lowest_price = entry
+        highest_time_ms = entry_time_ms
+        lowest_time_ms = entry_time_ms
+        for point in points:
+            high = float(point["high"])
+            low = float(point["low"])
+            if high > highest_price:
+                highest_price = high
+                highest_time_ms = int(point["timestamp_ms"])
+            if low < lowest_price:
+                lowest_price = low
+                lowest_time_ms = int(point["timestamp_ms"])
+        if exit_price is not None and exit_price > 0:
+            if exit_price > highest_price:
+                highest_price = exit_price
+                highest_time_ms = close_time_ms
+            if exit_price < lowest_price:
+                lowest_price = exit_price
+                lowest_time_ms = close_time_ms
+        if side == "Buy":
+            mfe_price = highest_price
+            mfe_time_ms = highest_time_ms
+            mae_price = lowest_price
+            mae_time_ms = lowest_time_ms
+            mfe = max(0.0, highest_price - entry)
+            mae = max(0.0, entry - lowest_price)
+        else:
+            mfe_price = lowest_price
+            mfe_time_ms = lowest_time_ms
+            mae_price = highest_price
+            mae_time_ms = highest_time_ms
+            mfe = max(0.0, entry - lowest_price)
+            mae = max(0.0, highest_price - entry)
+        strategy = audit["snapshot"].get("strategy") or {}
+        stop = float(strategy.get("stop") or 0)
+        target = float(strategy.get("target") or 0)
+        risk_distance = abs(entry - stop) if stop > 0 else 0.0
+        reward_distance = abs(target - entry) if target > 0 else 0.0
+        payload: dict[str, object] = {
+            "schema_version": "thesisedge.trade-excursion.v1",
+            "trade_id": trade_id,
+            "side": side,
+            "entry_price": entry,
+            "entry_time_ms": entry_time_ms,
+            "closed_at_ms": close_time_ms,
+            "exit_price": exit_price,
+            "source_interval": "5m",
+            "captured_candle_count": len(points),
+            "data_quality": "CLOSED_CANDLE_PATH" if points else "ENTRY_EXIT_ONLY",
+            "highest_price": highest_price,
+            "highest_time_ms": highest_time_ms,
+            "lowest_price": lowest_price,
+            "lowest_time_ms": lowest_time_ms,
+            "mfe_price": mfe_price,
+            "mfe_time_ms": mfe_time_ms,
+            "mfe_distance": mfe,
+            "mfe_percent": mfe / entry * 100.0,
+            "mfe_r": mfe / risk_distance if risk_distance > 0 else None,
+            "mae_price": mae_price,
+            "mae_time_ms": mae_time_ms,
+            "mae_distance": mae,
+            "mae_percent": mae / entry * 100.0,
+            "mae_r": mae / risk_distance if risk_distance > 0 else None,
+            "target_progress_percent": (
+                min(100.0, mfe / reward_distance * 100.0)
+                if reward_distance > 0 else None
+            ),
+            "duration_ms": max(0, close_time_ms - entry_time_ms),
+        }
+        now = int(time.time() * 1000)
+        self._execute(
+            """INSERT INTO trade_excursions(trade_id, calculated_at_ms, payload)
+               VALUES (?, ?, ?)
+               ON CONFLICT(trade_id) DO UPDATE SET
+                   calculated_at_ms=excluded.calculated_at_ms,
+                   payload=excluded.payload""",
+            (trade_id, now, json.dumps(payload, sort_keys=True)),
+        )
+        self.record_trade_lifecycle_event(
+            trade_id,
+            str(audit["symbol"]),
+            "EXCURSION_FINALIZED",
+            occurred_at_ms=close_time_ms,
+            external_event_id=f"trade-excursion:{trade_id}",
+            data_quality=payload["data_quality"],
+            captured_candle_count=len(points),
+            mfe_r=payload["mfe_r"],
+            mae_r=payload["mae_r"],
+        )
+        return payload
+
+    def match_trade_audit(
+        self, symbol: str, avg_entry: float, occurred_at_ms: int
+    ) -> str:
+        """Match an exchange exit to the most plausible captured local lifecycle."""
+        rows = self._execute(
+            """SELECT trade_id, opened_at_ms FROM trade_audits
+               WHERE symbol=? AND opened_at_ms<=?
+               ORDER BY opened_at_ms DESC LIMIT 10""",
+            (symbol, occurred_at_ms),
+            fetch="all",
+        )
+        candidates: list[tuple[float, int, str]] = []
+        for row in rows:
+            item = self._dict(row)
+            fill = self._execute(
+                """SELECT payload FROM trade_lifecycle_events
+                   WHERE trade_id=? AND event_type='FILL_CONFIRMED'
+                   ORDER BY id DESC LIMIT 1""",
+                (item["trade_id"],),
+                fetch="one",
+            )
+            if fill is None:
+                continue
+            actual_entry = float(json.loads(self._dict(fill)["payload"]).get("actual_entry") or 0)
+            if actual_entry <= 0 or avg_entry <= 0:
+                continue
+            relative_difference = abs(actual_entry - avg_entry) / avg_entry
+            candidates.append(
+                (relative_difference, -int(item["opened_at_ms"]), str(item["trade_id"]))
+            )
+        if not candidates:
+            return ""
+        relative_difference, _, trade_id = min(candidates)
+        return trade_id if relative_difference <= 0.005 else ""
+
     def save_trade(self, trade: Trade, status: str = "open") -> None:
         payload = asdict(trade)
         payload["state"] = trade.state.value
@@ -279,6 +717,12 @@ class Store:
                 """INSERT INTO trades(symbol, status, payload, opened_at_ms, updated_at_ms)
                    VALUES (?, ?, ?, ?, ?)""",
                 (trade.symbol, status, encoded, now, now),
+            )
+        if trade.trade_id:
+            self.update_trade_audit(
+                trade.trade_id,
+                "OPEN" if status == "open" else status.upper(),
+                order_id=trade.order_id or None,
             )
 
     def close_trade(
@@ -300,6 +744,17 @@ class Store:
             "UPDATE trades SET status='closed', payload=?, updated_at_ms=?, closed_at_ms=? WHERE id=?",
             (json.dumps(payload), now, now, item["id"]),
         )
+        trade_id = str(payload.get("trade_id") or "")
+        if trade_id:
+            self.record_trade_lifecycle_event(
+                trade_id,
+                symbol,
+                "CLOSED_LOCAL",
+                occurred_at_ms=now,
+                reason=reason,
+                details=details,
+            )
+            self.update_trade_audit(trade_id, "CLOSED", closed=True)
 
     def load_open_trades(self) -> dict[str, Trade]:
         rows = self._execute("SELECT payload FROM trades WHERE status='open' ORDER BY id", fetch="all")
@@ -480,10 +935,11 @@ class Store:
         record: dict[str, object],
         candles_5m: list[Candle],
         candles_1h: list[Candle],
+        entry_timeframe: str = "5m",
     ) -> None:
         """Persist a deduplicated, append-only Phase-0 replay record."""
         symbol = str(record["symbol"])
-        self.archive_thesisedge_candles(symbol, "5m", candles_5m)
+        self.archive_thesisedge_candles(symbol, entry_timeframe, candles_5m)
         self.archive_thesisedge_candles(symbol, "1h", candles_1h)
         self._execute(
             """INSERT INTO thesisedge_decisions
