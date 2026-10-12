@@ -116,12 +116,13 @@ def diagnose_trade(audit: dict[str, Any]) -> dict[str, object]:
     risk_budget = _number(sizing.get("risk_budget_usdt"))
     expected_loss = _number(sizing.get("expected_loss_at_stop_usdt"))
     stop_fees = _number(sizing.get("estimated_stop_fees_usdt")) or 0.0
+    stop_slippage = _number(sizing.get("estimated_stop_slippage_usdt")) or 0.0
     final_quantity = _number(sizing.get("final_quantity"))
     actual_quantity = _number((fill or {}).get("payload", {}).get("actual_quantity"))
     quantity_step = _number(sizing.get("quantity_step")) or 0.0
     if risk_budget and expected_loss is not None:
         price_risk_ok = expected_loss <= risk_budget + 1e-9
-        fee_adjusted_risk = expected_loss + stop_fees
+        fee_adjusted_risk = expected_loss + stop_fees + stop_slippage
         fee_risk_ok = fee_adjusted_risk <= risk_budget * 1.02
         quantity_ok = (
             actual_quantity is None
@@ -230,7 +231,7 @@ def diagnose_trade(audit: dict[str, Any]) -> dict[str, object]:
         snapshot
         and fill
         and excursion
-        and (exchange_exit or local_exit)
+        and exchange_exit
         and candidate
         and deep
         and action

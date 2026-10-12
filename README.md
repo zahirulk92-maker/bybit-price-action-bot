@@ -40,7 +40,7 @@ The active timeframe funnel may perform dozens of read-only market-data requests
 
 Requires Python 3.10 or newer.
 
-Double-click `start.bat` to create `.venv`, install dependencies, open the dashboard at `http://127.0.0.1:8000`, and run the bot with Bybit Demo order placement enabled. It forces Demo mode and 5× leverage; it does not authorize live trading. Press `Ctrl+C` in its terminal to stop it.
+Double-click `start.bat` to create `.venv`, install dependencies, open the dashboard at `http://127.0.0.1:8000`, and run the bot. It forces Demo mode, but order placement, leverage, and risk come from `.env`; it does not authorize live trading. Press `Ctrl+C` in its terminal to stop it.
 
 ```powershell
 python -m venv .venv
@@ -65,6 +65,26 @@ uvicorn price_action_bot.web:app --reload
 ```
 
 Open `http://127.0.0.1:8000` and sign in with the dashboard username/password. Pausing from the dashboard blocks new entries while existing positions continue to be managed.
+
+### Windows background startup
+
+The background runner keeps the local bot running after its terminal is closed, as long as the PC remains awake. It always forces Bybit Demo and the embedded web worker, but deliberately reads order placement, leverage, and risk values from `.env` instead of overriding them.
+
+```powershell
+# Register once: start hidden after Windows sign-in
+powershell -ExecutionPolicy Bypass -File .\scripts\register-startup-task.ps1
+
+# Start now (or report the existing healthy worker without duplicating it)
+powershell -ExecutionPolicy Bypass -File .\scripts\start-background.ps1
+
+# Inspect local health, worker state, PID, and scheduled-task state
+powershell -ExecutionPolicy Bypass -File .\scripts\status-background.ps1
+
+# Stop only a worker launched by the managed background runner
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-background.ps1
+```
+
+The scheduled task is named `ThesisEdge Demo Bot`. Sleep, hibernation, shutdown, and loss of network access still stop trading activity. The task resumes on the next Windows sign-in; it is not a replacement for an always-on host.
 
 Events are recorded in `trading_bot.db`. Stop the process with `Ctrl+C`.
 

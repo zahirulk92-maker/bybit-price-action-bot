@@ -285,21 +285,67 @@ class BybitGateway:
             )
         )
 
-    def close_partial(self, symbol: str, open_side: Side, qty: float) -> str:
+    def close_partial(
+        self,
+        symbol: str,
+        open_side: Side,
+        qty: float,
+        order_link_id: str,
+        attempts: int = 3,
+    ) -> str:
+        """Submit one logical reduce-only close and reconcile ambiguous responses."""
         close_side: Side = "Sell" if open_side == "Buy" else "Buy"
         rules = self.instrument_rules(symbol)
         rounded_qty = floor_to_step(qty, rules.qty_step)
         if rounded_qty < rules.min_qty:
-            return ""
-        response = self._check(
-            self.session.place_order(
-                category="linear",
-                symbol=symbol,
-                side=close_side,
-                orderType="Market",
-                qty=str(rounded_qty),
-                positionIdx=0,
-                reduceOnly=True,
+            raise ValueError(
+                f"Close quantity {rounded_qty} is below {symbol} minimum {rules.min_qty}"
             )
-        )
-        return str(response["result"]["orderId"])
+        link_id = order_link_id[:36]
+        if not link_id:
+            raise ValueError("A deterministic order link id is required for partial closes")
+        attempts = max(1, min(attempts, 5))
+        retryable_codes = {10000, 10002, 10006, 10016}
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                existing = self.order_by_link_id(symbol, link_id)
+            except Exception as exc:
+                last_error = exc
+                retryable = not isinstance(exc, BybitAPIError) or exc.code in retryable_codes
+                if not retryable or attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            if existing:
+                return str(existing.get("orderId") or "")
+            try:
+                response = self._check(
+                    self.session.place_order(
+                        category="linear",
+                        symbol=symbol,
+                        side=close_side,
+                        orderType="Market",
+                        qty=str(rounded_qty),
+                        positionIdx=0,
+                        reduceOnly=True,
+                        orderLinkId=link_id,
+                    )
+                )
+                order_id = str(response["result"].get("orderId") or "")
+                if not order_id:
+                    raise RuntimeError("Bybit accepted close without returning an order id")
+                return order_id
+            except Exception as exc:
+                last_error = exc
+                try:
+                    existing = self.order_by_link_id(symbol, link_id)
+                except Exception:
+                    existing = None
+                if existing:
+                    return str(existing.get("orderId") or "")
+                retryable = not isinstance(exc, BybitAPIError) or exc.code in retryable_codes
+                if not retryable or attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.4 * (attempt + 1))
+        raise RuntimeError("Close order submission failed") from last_error

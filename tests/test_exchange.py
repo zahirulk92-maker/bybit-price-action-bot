@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from price_action_bot.exchange import BybitAPIError, BybitGateway
+from price_action_bot.exchange import BybitAPIError, BybitGateway, InstrumentRules
 
 
 def ok(rows=None):
@@ -60,6 +60,39 @@ class OrderIdempotencyTests(unittest.TestCase):
             gateway.place_market_order("BTCUSDT", "Buy", 0.01, "stable-link", attempts=3)
 
         self.assertEqual(gateway.session.place_order.call_count, 1)
+
+    def test_partial_close_reuses_link_id_after_ambiguous_acceptance(self):
+        gateway = self.gateway()
+        gateway.instrument_rules = MagicMock(
+            return_value=InstrumentRules(0.001, 0.001, 100.0, 0.01)
+        )
+        gateway.order_by_link_id = MagicMock(
+            side_effect=[None, {"orderId": "close-accepted"}]
+        )
+        gateway.session.place_order.side_effect = TimeoutError("response lost")
+
+        order_id = gateway.close_partial(
+            "BTCUSDT", "Buy", 0.5, "tp1-stable-link", attempts=3
+        )
+
+        self.assertEqual(order_id, "close-accepted")
+        self.assertEqual(gateway.session.place_order.call_count, 1)
+        self.assertEqual(
+            gateway.session.place_order.call_args.kwargs["orderLinkId"],
+            "tp1-stable-link",
+        )
+        self.assertTrue(gateway.session.place_order.call_args.kwargs["reduceOnly"])
+
+    def test_partial_close_rejects_below_minimum_quantity(self):
+        gateway = self.gateway()
+        gateway.instrument_rules = MagicMock(
+            return_value=InstrumentRules(0.1, 1.0, 100.0, 0.01)
+        )
+
+        with self.assertRaises(ValueError):
+            gateway.close_partial("BTCUSDT", "Buy", 0.5, "tp1-stable-link")
+
+        gateway.session.place_order.assert_not_called()
 
 
 if __name__ == "__main__":

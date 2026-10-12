@@ -38,33 +38,16 @@ if not exist ".env" (
     )
 )
 
-rem Demo-only overrides. Values in .env cannot override these settings.
+rem Operational boundaries only. Order placement and risk come from .env.
 set "BYBIT_DEMO=true"
-set "ENABLE_ORDER_PLACEMENT=true"
 set "RUN_ENGINE_IN_WEB=true"
 set "DASHBOARD_ALLOW_INSECURE_LOCAL=true"
-set "LEVERAGE=5"
-set "RISK_PER_TRADE=0.01"
-set "MAX_TOTAL_OPEN_RISK=0.03"
-set "DAILY_MAX_NET_LOSS=0.05"
-set "MIN_REWARD_RISK=2.0"
-set "ORDER_RETRY_ATTEMPTS=3"
-set "V2_UNIVERSE_MODE=demo"
-set "SCANNER_LATENCY_LIMIT_MS=15000"
-set "V2_PORTFOLIO_MODE=shadow"
-set "V2_PLAYBOOK_MODE=shadow"
 set "PYTHONUTF8=1"
 
 echo.
 echo [SAFE MODE] Bybit Demo: ON
-echo [MODE] Demo order placement: ON
-echo [RISK] Leverage: 5x
-echo [RISK] Per trade: 1%% ^| Max daily net loss: 5%% ^| Max open risk: 3%%
-echo [TARGET] Minimum reward:risk: 1:2
-echo [EXECUTION] Safe retries: 3 with duplicate-order protection
-echo [SCANNER] ACTIVE DEMO: 4h top 20 ^> 1h aligned 10 ^> 15m confirmation ^> 5m trigger
-echo [V2] Portfolio correlation map: SHADOW ONLY ^| no risk authority
-echo [V2] Regime and three playbooks: SHADOW ONLY ^| no signal authority
+echo [CONFIG] Order placement, leverage, risk and strategy gates: .env
+echo [SCANNER] ACTIVE DEMO: 4h top 20 ^> 1h aligned 10 ^> closed 15m entry
 echo [MODE] Live trading: FORCED OFF
 echo [DASHBOARD] http://127.0.0.1:8000
 echo [STOP] Press Ctrl+C in this window.

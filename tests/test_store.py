@@ -128,6 +128,32 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["captured_candle_count"], 1)
         self.assertFalse(rows[0]["excursion_available"])
 
+    def test_closed_audit_filter_includes_failure_statuses_and_batches_details(self):
+        closed_id = self.store.create_trade_audit(
+            {"symbol": "BTCUSDT", "side": "Buy", "decision": {}, "sizing": {}},
+            "ta-emergency",
+        )
+        self.store.record_trade_lifecycle_event(
+            closed_id, "BTCUSDT", "EMERGENCY_CLOSE_UNPROTECTED"
+        )
+        self.store.update_trade_audit(
+            closed_id, "EMERGENCY_CLOSED", closed=True
+        )
+        self.store.create_trade_audit(
+            {"symbol": "ETHUSDT", "side": "Sell", "decision": {}, "sizing": {}},
+            "ta-open",
+        )
+
+        summaries = self.store.recent_trade_audits(closed_only=True)
+        expanded = self.store.expand_trade_audits(summaries)
+
+        self.assertEqual([row["trade_id"] for row in summaries], [closed_id])
+        self.assertEqual(expanded[0]["status"], "EMERGENCY_CLOSED")
+        self.assertEqual(
+            expanded[0]["events"][0]["event_type"],
+            "EMERGENCY_CLOSE_UNPROTECTED",
+        )
+
     def test_buy_excursion_reports_pre_stop_peak_and_adverse_move(self):
         snapshot = {
             "symbol": "BTCUSDT", "side": "Buy", "decision": {}, "sizing": {},

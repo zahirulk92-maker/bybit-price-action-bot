@@ -258,6 +258,42 @@ class UniverseTests(unittest.TestCase):
         self.assertTrue(timeframe_confirmation(bearish, "Sell")[0])
         self.assertFalse(timeframe_confirmation(bearish, "Buy")[0])
 
+    def test_engine_observes_4h_candidates_before_15m_confirmation(self):
+        symbols = ["READYUSDT", "WAITUSDT"]
+        tickers = [self.ticker(symbol) for symbol in symbols]
+        instruments = [self.instrument(symbol) for symbol in symbols]
+        bullish = {
+            "240": self.timeframe_candles(14_400_000, bullish=True),
+            "60": self.timeframe_candles(3_600_000, bullish=True),
+            "15": self.timeframe_candles(900_000, bullish=True),
+        }
+        bearish_15m = self.timeframe_candles(900_000, bullish=False)
+        gateway = MagicMock()
+        gateway.tickers.return_value = tickers
+        gateway.instruments.return_value = instruments
+        gateway.candles.side_effect = lambda symbol, interval, limit: (
+            bearish_15m if symbol == "WAITUSDT" and interval == "15" else bullish[interval]
+        )
+        store = MagicMock()
+        store.load_open_trades.return_value = {}
+        store.latest_thesisedge_universe.return_value = None
+        engine = TradingEngine(
+            Settings("demo-key", "demo-secret", v2_universe_mode="demo"),
+            gateway,
+            store,
+            MagicMock(),
+        )
+
+        with unittest.mock.patch("price_action_bot.engine.time.time", return_value=self.NOW / 1000):
+            engine.refresh_universe(force=True)
+
+        self.assertEqual(set(engine.symbols), set(symbols))
+        self.assertEqual(engine.funnel_entry_symbols, {"READYUSDT"})
+        self.assertEqual(engine.funnel_directions, {
+            "READYUSDT": "Buy",
+            "WAITUSDT": "Buy",
+        })
+
     def test_demo_funnel_requires_4h_1h_and_15m_alignment(self):
         symbols = ["ALIGNEDUSDT", "CONFLICTUSDT"]
         params = ScannerFunnelParameters(candidate_max=20, deep_analysis_max=10, action_queue_max=10)

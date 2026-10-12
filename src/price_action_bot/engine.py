@@ -11,7 +11,7 @@ from .analysis import detect_pattern, detect_trade_reversal, market_context, rew
 from .config import Settings
 from .exchange import BybitGateway
 from .management import build_recovery_plan
-from .models import ArmedSignal, Candle, MarketContext, SignalState, Trade
+from .models import ArmedSignal, Candle, MarketContext, Side, SignalState, Trade
 from .notify import TelegramNotifier, format_alert
 from .playbooks import build_playbook_context
 from .portfolio import build_portfolio_map
@@ -59,6 +59,12 @@ def _set_check(
             check["status"] = status
             check["detail"] = detail
             return
+
+
+def _exit_link_id(symbol: str, stage: str, identity: str) -> str:
+    """Build a deterministic Bybit idempotency key for one logical exit stage."""
+    safe_identity = "".join(char for char in identity if char.isalnum()) or symbol
+    return f"px-{symbol[:6]}-{stage[:5]}-{safe_identity[-18:]}"[:36]
 
 
 class TradingEngine:
@@ -376,12 +382,18 @@ class TradingEngine:
                 api_calls=api_calls,
                 data_errors=data_errors,
             )
+            four_hour_pool = list(snapshot.get("candidate_pool") or [])
             one_hour_pool = list(snapshot.get("deep_analysis_pool") or [])
             action_queue = list(snapshot.get("action_queue") or [])
-            selected = [str(row["symbol"]) for row in one_hour_pool]
+            # Keep every qualified 4h candidate under live observation.  The
+            # current 1h context and closed 15m confirmation are re-checked in
+            # _process_symbol, so a symbol is not hidden for a full scanner
+            # refresh merely because its 15m momentum was not aligned at the
+            # instant this snapshot was built.
+            selected = [str(row["symbol"]) for row in four_hour_pool]
             self.funnel_directions = {
                 str(row["symbol"]): str(row["side"])
-                for row in one_hour_pool
+                for row in four_hour_pool
             }
             self.funnel_entry_symbols = {str(row["symbol"]) for row in action_queue}
             self.last_funnel_snapshot = snapshot
@@ -635,6 +647,35 @@ class TradingEngine:
             self.store.decision_snapshot(symbol, decision)
             return
 
+        expected_1h_bias = (
+            "bullish" if required_side == "Buy" else
+            "bearish" if required_side == "Sell" else ""
+        )
+        if not expected_1h_bias or context.bias != expected_1h_bias:
+            armed = self.armed.pop(symbol, None)
+            if armed:
+                self.store.event(
+                    "SIGNAL_FILTERED_OUT",
+                    symbol,
+                    stage="1h_alignment",
+                    required_side=required_side,
+                    bias_1h=context.bias,
+                )
+                self.store.update_signal_journal(
+                    self.journal_ids.pop(symbol, None), symbol, "FILTERED_OUT",
+                    reason="Current 1h direction no longer aligns with 4h",
+                )
+            decision["summary"] = "4h qualified — waiting for current 1h direction to align"
+            _set_check(
+                decision,
+                "structure",
+                "wait",
+                f"Current 1h {context.bias} does not align with 4h {required_side or 'direction'}",
+            )
+            self.store.decision_snapshot(symbol, decision)
+            save_market("SCAN")
+            return
+
         armed = self.armed.get(symbol)
         if armed:
             if armed.pattern.side != required_side or not confirmation_15m:
@@ -806,7 +847,7 @@ class TradingEngine:
             self.store.decision_snapshot(symbol, decision)
             return
 
-        if symbol not in self.funnel_entry_symbols or not confirmation_15m:
+        if not confirmation_15m:
             decision["summary"] = "4h and 1h qualified — waiting for closed 15m confirmation"
             _set_check(
                 decision,
@@ -941,6 +982,25 @@ class TradingEngine:
             self.store.record_trade_lifecycle_event(
                 trade.trade_id, trade.symbol, event_type, **payload
             )
+
+    def _submit_close(
+        self,
+        symbol: str,
+        side: Side,
+        quantity: float,
+        stage: str,
+        identity: str,
+    ) -> str:
+        close_order_id = self.gateway.close_partial(
+            symbol,
+            side,
+            quantity,
+            _exit_link_id(symbol, stage, identity),
+            attempts=self.settings.order_retry_attempts,
+        )
+        if not close_order_id:
+            raise RuntimeError(f"{stage} close was not confirmed by an exchange order id")
+        return close_order_id
 
     def _capture_trade_path(
         self, trade: Trade, candles: list[Candle] | None = None
@@ -1105,6 +1165,8 @@ class TradingEngine:
             min_qty=rules.min_qty,
             max_qty=min(rules.max_market_qty, margin_qty_cap),
             side=armed.pattern.side,
+            taker_fee_rate=self.settings.v2_taker_fee_rate,
+            slippage_rate=self.settings.v2_slippage_rate,
         )
         if qty <= 0:
             self.store.event("ENTRY_BLOCKED_MIN_QTY", symbol)
@@ -1113,7 +1175,14 @@ class TradingEngine:
         side_code = "b" if armed.pattern.side == "Buy" else "s"
         link_id = f"pa-{symbol[:8]}-{armed.pattern.timestamp_ms}-{side_code}"[:36]
         stop_distance = abs(expected_entry - armed.pattern.stop)
-        raw_qty = equity * self.settings.risk_per_trade / stop_distance
+        per_unit_fees = (
+            expected_entry + armed.pattern.stop
+        ) * self.settings.v2_taker_fee_rate
+        per_unit_slippage = armed.pattern.stop * self.settings.v2_slippage_rate
+        per_unit_friction = per_unit_fees + per_unit_slippage
+        raw_qty = equity * self.settings.risk_per_trade / (
+            stop_distance + per_unit_friction
+        )
         effective_max_qty = min(rules.max_market_qty, margin_qty_cap)
         snapshot: dict[str, object] = {
             "schema_version": "thesisedge.trade-audit.v1",
@@ -1152,9 +1221,8 @@ class TradingEngine:
                 "minimum_quantity": rules.min_qty,
                 "final_quantity": qty,
                 "expected_loss_at_stop_usdt": qty * stop_distance,
-                "estimated_stop_fees_usdt": qty
-                * (expected_entry + armed.pattern.stop)
-                * self.settings.v2_taker_fee_rate,
+                "estimated_stop_fees_usdt": qty * per_unit_fees,
+                "estimated_stop_slippage_usdt": qty * per_unit_slippage,
                 "leverage": self.settings.leverage,
                 "taker_fee_rate": self.settings.v2_taker_fee_rate,
                 "slippage_rate": self.settings.v2_slippage_rate,
@@ -1246,7 +1314,13 @@ class TradingEngine:
                 self.settings.v2_slippage_rate,
             )
             if not actual_entry_in_band or actual_rr < self.settings.min_reward_risk:
-                close_order_id = self.gateway.close_partial(symbol, armed.pattern.side, actual_qty)
+                close_order_id = self._submit_close(
+                    symbol,
+                    armed.pattern.side,
+                    actual_qty,
+                    "fill",
+                    link_id,
+                )
                 self.store.record_trade_lifecycle_event(
                     trade_id, symbol, "INVALID_FILL_EXIT_REQUESTED",
                     close_order_id=close_order_id,
@@ -1294,7 +1368,13 @@ class TradingEngine:
             )
         except Exception:
             LOGGER.exception("Protection failed after entry; emergency-closing %s", symbol)
-            close_order_id = self.gateway.close_partial(symbol, armed.pattern.side, qty)
+            close_order_id = self._submit_close(
+                symbol,
+                armed.pattern.side,
+                qty,
+                "guard",
+                link_id,
+            )
             self.store.record_trade_lifecycle_event(
                 trade_id, symbol, "EMERGENCY_CLOSE_UNPROTECTED",
                 close_order_id=close_order_id,
@@ -1443,7 +1523,13 @@ class TradingEngine:
                 )
                 if reversal:
                     close_qty = float(position.get("size") or trade.qty)
-                    close_order_id = self.gateway.close_partial(symbol, trade.side, close_qty)
+                    close_order_id = self._submit_close(
+                        symbol,
+                        trade.side,
+                        close_qty,
+                        "rev",
+                        trade.trade_id or trade.order_id,
+                    )
                     self._trade_lifecycle(
                         trade,
                         "REVERSAL_EXIT_REQUESTED",
@@ -1489,7 +1575,13 @@ class TradingEngine:
                 )
                 if reached_one_r and not trade.partial_taken:
                     partial_qty = trade.qty * 0.50
-                    close_order_id = self.gateway.close_partial(symbol, trade.side, partial_qty)
+                    close_order_id = self._submit_close(
+                        symbol,
+                        trade.side,
+                        partial_qty,
+                        "tp1",
+                        trade.trade_id or trade.order_id,
+                    )
                     fee_buffer = trade.entry * 0.0007
                     new_stop = (
                         trade.entry + fee_buffer
@@ -1532,7 +1624,13 @@ class TradingEngine:
                 )
                 if trade.partial_taken and reached_tp2 and not trade.tp2_taken:
                     partial_qty = trade.qty * 0.30
-                    close_order_id = self.gateway.close_partial(symbol, trade.side, partial_qty)
+                    close_order_id = self._submit_close(
+                        symbol,
+                        trade.side,
+                        partial_qty,
+                        "tp2",
+                        trade.trade_id or trade.order_id,
+                    )
                     trade.tp2_taken = True
                     trade.state = SignalState.PARTIAL_TP
                     self.store.save_trade(trade)
@@ -1560,7 +1658,13 @@ class TradingEngine:
                 )
                 if trade.tp2_taken and reached_tp3 and not trade.tp3_taken:
                     remaining_qty = float(position.get("size") or trade.qty * 0.20)
-                    close_order_id = self.gateway.close_partial(symbol, trade.side, remaining_qty)
+                    close_order_id = self._submit_close(
+                        symbol,
+                        trade.side,
+                        remaining_qty,
+                        "tp3",
+                        trade.trade_id or trade.order_id,
+                    )
                     self._trade_lifecycle(
                         trade,
                         "FINAL_EXIT_REQUESTED",

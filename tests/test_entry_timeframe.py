@@ -32,7 +32,8 @@ class EntryTimeframeTests(unittest.TestCase):
         store.load_open_trades.return_value = {}
         engine = TradingEngine(settings, gateway, store, MagicMock())
         engine.funnel_directions = {"BTCUSDT": "Buy"}
-        engine.funnel_entry_symbols = {"BTCUSDT"}
+        # A stale funnel action queue must not duplicate the live 15m gate.
+        engine.funnel_entry_symbols = set()
         context = MarketContext(
             bias="bullish",
             support=Zone(100, 99, 101, "support"),
@@ -64,6 +65,50 @@ class EntryTimeframeTests(unittest.TestCase):
             engine.armed["BTCUSDT"].expires_at_ms,
             pattern.timestamp_ms + 4 * ENTRY_TIMEFRAME_MS,
         )
+
+    def test_engine_rejects_15m_signal_when_current_1h_direction_conflicts(self):
+        settings = Settings(
+            api_key="demo-key",
+            api_secret="demo-secret",
+            enable_order_placement=False,
+            v2_instrumentation_enabled=False,
+            v2_structure_mode="off",
+            v2_playbook_mode="off",
+        )
+        candles_15m = [
+            Candle(index * 900_000, 100, 101, 99, 100.5, 100)
+            for index in range(30)
+        ]
+        candles_1h = [
+            Candle(index * 3_600_000, 100, 102, 98, 99, 1_000)
+            for index in range(60)
+        ]
+        gateway = MagicMock()
+        gateway.candles.side_effect = lambda symbol, interval, limit: (
+            candles_15m if interval == "15" else candles_1h
+        )
+        store = MagicMock()
+        store.load_open_trades.return_value = {}
+        engine = TradingEngine(settings, gateway, store, MagicMock())
+        engine.funnel_directions = {"BTCUSDT": "Buy"}
+        bearish_context = MarketContext(
+            bias="bearish",
+            support=Zone(95, 94, 96, "support"),
+            resistance=Zone(100, 99, 101, "resistance"),
+            atr=2,
+        )
+
+        with (
+            patch("price_action_bot.engine.market_context", return_value=bearish_context),
+            patch("price_action_bot.engine.timeframe_confirmation", return_value=(True, 1.0)),
+            patch("price_action_bot.engine.detect_pattern") as detect,
+        ):
+            engine._process_symbol("BTCUSDT", 100)
+
+        detect.assert_not_called()
+        self.assertNotIn("BTCUSDT", engine.armed)
+        decision = store.decision_snapshot.call_args.args[1]
+        self.assertIn("waiting for current 1h direction", decision["summary"])
 
 
 if __name__ == "__main__":

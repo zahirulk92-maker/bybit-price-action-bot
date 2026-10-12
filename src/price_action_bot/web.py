@@ -438,16 +438,15 @@ def _trade_diagnosis_report(
     summaries = store.recent_trade_audits(
         limit,
         symbol=symbol.strip().upper(),
-        status="CLOSED",
+        closed_only=True,
     )
-    audits: list[dict[str, object]] = []
+    recent_summaries: list[dict[str, object]] = []
     for summary in summaries:
         closed_at_ms = int(summary.get("closed_at_ms") or 0)
         if closed_at_ms < since_ms:
             continue
-        audit = store.trade_audit(str(summary.get("trade_id") or ""))
-        if audit is not None:
-            audits.append(audit)
+        recent_summaries.append(summary)
+    audits = store.expand_trade_audits(recent_summaries)
     report = build_trade_diagnosis_report(audits)
     report["since_ms"] = since_ms
     report["symbol_filter"] = symbol.strip().upper()

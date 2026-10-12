@@ -113,7 +113,10 @@ class ReconciliationTests(unittest.TestCase):
 
         self.engine._enter("BTCUSDT", armed, 100.01)
 
-        self.gateway.close_partial.assert_called_once_with("BTCUSDT", "Buy", 9.0)
+        close_args = self.gateway.close_partial.call_args
+        self.assertEqual(close_args.args[:3], ("BTCUSDT", "Buy", 9.0))
+        self.assertTrue(close_args.args[3])
+        self.assertEqual(close_args.kwargs["attempts"], self.settings.order_retry_attempts)
         self.gateway.set_protection.assert_not_called()
         self.store.save_trade.assert_not_called()
         self.assertNotIn("BTCUSDT", self.engine.trades)
@@ -159,7 +162,12 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(snapshot["decision"]["funnel"]["deep_analysis_pool"]["bias_1h"], "bullish")
         self.assertEqual(snapshot["strategy"]["entry_timeframe"], "15m")
         self.assertEqual(snapshot["sizing"]["risk_budget_usdt"], 10.0)
-        self.assertAlmostEqual(snapshot["sizing"]["expected_loss_at_stop_usdt"], 9.9 * 1.01)
+        self.assertLessEqual(
+            snapshot["sizing"]["expected_loss_at_stop_usdt"]
+            + snapshot["sizing"]["estimated_stop_fees_usdt"]
+            + snapshot["sizing"]["estimated_stop_slippage_usdt"],
+            snapshot["sizing"]["risk_budget_usdt"],
+        )
         saved_trade = self.store.save_trade.call_args.args[0]
         self.assertEqual(saved_trade.trade_id, "ta-entry")
         lifecycle_names = [
@@ -199,6 +207,42 @@ class ReconciliationTests(unittest.TestCase):
         self.engine._reconcile_exchange_positions(force=True)
 
         self.assertEqual(trade.qty, 1.0)
+
+    def test_tp1_retry_uses_the_same_exit_identity_after_stop_move_failure(self):
+        trade = self.trade()
+        trade.trade_id = "trade-stable-1"
+        self.engine.trades = {trade.symbol: trade}
+        self.gateway.position.return_value = {
+            "symbol": trade.symbol, "side": trade.side, "size": "1", "markPrice": "105"
+        }
+        self.gateway.candles.return_value = []
+        self.gateway.close_partial.return_value = "close-1"
+        self.gateway.move_stop.side_effect = [RuntimeError("temporary failure"), None]
+
+        self.engine._manage_open_trades({trade.symbol: 105.0})
+        self.assertFalse(trade.partial_taken)
+        self.engine._manage_open_trades({trade.symbol: 105.0})
+
+        self.assertTrue(trade.partial_taken)
+        self.assertEqual(self.gateway.close_partial.call_count, 2)
+        first = self.gateway.close_partial.call_args_list[0]
+        second = self.gateway.close_partial.call_args_list[1]
+        self.assertEqual(first.args[3], second.args[3])
+
+    def test_tp1_is_not_recorded_without_a_confirmed_close_order(self):
+        trade = self.trade()
+        trade.trade_id = "trade-no-close-id"
+        self.engine.trades = {trade.symbol: trade}
+        self.gateway.position.return_value = {
+            "symbol": trade.symbol, "side": trade.side, "size": "1", "markPrice": "105"
+        }
+        self.gateway.candles.return_value = []
+        self.gateway.close_partial.return_value = ""
+
+        self.engine._manage_open_trades({trade.symbol: 105.0})
+
+        self.assertFalse(trade.partial_taken)
+        self.gateway.move_stop.assert_not_called()
 
     def test_closed_pnl_notification_is_exchange_confirmed_and_deduplicated(self):
         self.gateway.closed_pnl.return_value = [{

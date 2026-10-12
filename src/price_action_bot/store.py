@@ -442,6 +442,7 @@ class Store:
         *,
         symbol: str = "",
         status: str = "",
+        closed_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Return recent immutable audit snapshots without expanding lifecycle rows."""
         clauses: list[str] = []
@@ -452,6 +453,8 @@ class Store:
         if status:
             clauses.append("audit.status=?")
             params.append(status.upper())
+        if closed_only:
+            clauses.append("audit.closed_at_ms IS NOT NULL")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(max(1, min(int(limit), 200)))
         rows = self._execute(
@@ -480,6 +483,54 @@ class Store:
                 item["captured_candle_count"] or 0
             )
             item["excursion_available"] = bool(item.pop("excursion_count") or 0)
+            result.append(item)
+        return result
+
+    def expand_trade_audits(
+        self, summaries: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Expand audit summaries with lifecycle and excursion data in two queries."""
+        if not summaries:
+            return []
+        trade_ids = [str(item.get("trade_id") or "") for item in summaries]
+        trade_ids = [trade_id for trade_id in trade_ids if trade_id]
+        if not trade_ids:
+            return []
+        placeholders = ",".join("?" for _ in trade_ids)
+        event_rows = self._execute(
+            f"""SELECT id, trade_id, event_type, occurred_at_ms,
+                       external_event_id, payload
+                FROM trade_lifecycle_events
+                WHERE trade_id IN ({placeholders})
+                ORDER BY occurred_at_ms, id""",
+            tuple(trade_ids),
+            fetch="all",
+        )
+        excursion_rows = self._execute(
+            f"""SELECT trade_id, payload FROM trade_excursions
+                WHERE trade_id IN ({placeholders})""",
+            tuple(trade_ids),
+            fetch="all",
+        )
+        events_by_trade: dict[str, list[dict[str, Any]]] = {
+            trade_id: [] for trade_id in trade_ids
+        }
+        for row in event_rows:
+            event = self._dict(row)
+            trade_id = str(event.pop("trade_id"))
+            event["payload"] = json.loads(event["payload"])
+            events_by_trade.setdefault(trade_id, []).append(event)
+        excursions = {
+            str(item["trade_id"]): json.loads(item["payload"])
+            for row in excursion_rows
+            for item in [self._dict(row)]
+        }
+        result: list[dict[str, Any]] = []
+        for summary in summaries:
+            item = dict(summary)
+            trade_id = str(item.get("trade_id") or "")
+            item["events"] = events_by_trade.get(trade_id, [])
+            item["excursion"] = excursions.get(trade_id)
             result.append(item)
         return result
 

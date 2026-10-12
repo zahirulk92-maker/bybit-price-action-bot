@@ -23,6 +23,8 @@ def position_size(
     min_qty: float,
     max_qty: float,
     side: Side | None = None,
+    taker_fee_rate: float = 0.0,
+    slippage_rate: float = 0.0,
 ) -> float:
     if equity <= 0 or not 0 < risk_fraction <= 1:
         raise ValueError("Invalid equity or risk fraction")
@@ -33,7 +35,15 @@ def position_size(
     distance = abs(entry - stop)
     if distance <= 0:
         raise ValueError("Entry and stop cannot be equal")
-    raw_qty = equity * risk_fraction / distance
+    if min(taker_fee_rate, slippage_rate) < 0:
+        raise ValueError("Execution costs cannot be negative")
+    # Risk is all-in: entry fee plus stop-side fee and modeled stop slippage.
+    per_unit_risk = (
+        distance
+        + entry * taker_fee_rate
+        + stop * (taker_fee_rate + slippage_rate)
+    )
+    raw_qty = equity * risk_fraction / per_unit_risk
     qty = floor_to_step(min(raw_qty, max_qty), qty_step)
     if qty < min_qty:
         return 0.0

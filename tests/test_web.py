@@ -61,6 +61,26 @@ class ChartApiTests(unittest.TestCase):
         dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('data-interval="240">4h</button>', dashboard)
 
+    def test_chart_resets_price_scale_when_symbol_or_timeframe_changes(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("if(state.chartKey!==key){closeChartStream();resetChartDataset()", dashboard)
+        self.assertIn("function resetChartDataset()", dashboard)
+        self.assertIn("state.tvCandle.setData([])", dashboard)
+        self.assertIn("state.tvChart.priceScale('right').applyOptions({autoScale:true})", dashboard)
+        self.assertIn("request!==state.request||key!==`${state.selected}:${state.interval}`", dashboard)
+
+    def test_market_structure_explains_watch_selection_and_trade_unlocks(self):
+        dashboard = (Path(web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="selectionReason"', dashboard)
+        self.assertIn('id="selectionUnlocks"', dashboard)
+        self.assertIn('id="selectionTradeState"', dashboard)
+        self.assertIn("function renderSelectedTradeContext()", dashboard)
+        self.assertIn("state.v2Scanner=data.v2_scanner||null", dashboard)
+        self.assertIn("highlight = chart view", dashboard)
+        self.assertIn("ranking score", dashboard)
+        self.assertIn("Ranking scores select symbols for analysis; they do not authorize an order.", dashboard)
+        self.assertIn("entry readiness ${passed}/${checks.length||6} (${readiness}%)", dashboard)
+
     def test_audit_page_is_available(self):
         response = web.audit_dashboard("test")
         self.assertTrue(str(response.path).endswith("audit.html"))
@@ -402,12 +422,12 @@ class ChartApiTests(unittest.TestCase):
         with patch.object(
             web.store, "recent_trade_audits", return_value=summaries
         ) as recent, patch.object(
-            web.store, "trade_audit", return_value=audit
-        ) as detail:
+            web.store, "expand_trade_audits", return_value=[audit]
+        ) as expand:
             result = web.api_trade_diagnosis_report(7, " btcusdt ", 200, "test")
 
-        recent.assert_called_once_with(200, symbol="BTCUSDT", status="CLOSED")
-        detail.assert_called_once_with("ta-new")
+        recent.assert_called_once_with(200, symbol="BTCUSDT", closed_only=True)
+        expand.assert_called_once_with([summaries[0]])
         self.assertTrue(result["read_only"])
         self.assertEqual(result["authority"], "diagnostic_only")
         self.assertEqual(result["symbol_filter"], "BTCUSDT")

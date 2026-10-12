@@ -105,6 +105,18 @@ class TradeDiagnosisTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "INSUFFICIENT_DATA")
         self.assertEqual(result["authority"], "diagnostic_only")
 
+    def test_local_close_without_exchange_outcome_is_not_called_good(self):
+        audit = captured_audit(pnl=3.0, mfe_r=1.2)
+        audit["events"] = [
+            event
+            for event in audit["events"]
+            if event["event_type"] != "EXCHANGE_EXIT_CONFIRMED"
+        ]
+
+        result = diagnose_trade(audit)
+
+        self.assertEqual(result["verdict"], "INSUFFICIENT_DATA")
+
     def test_report_ranks_recurring_issues_and_enforces_sample_floor(self):
         audits = [
             captured_audit(),

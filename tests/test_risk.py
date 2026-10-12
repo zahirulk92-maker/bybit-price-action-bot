@@ -38,6 +38,26 @@ class RiskTests(unittest.TestCase):
         )
         self.assertEqual(qty, 0.016)
 
+    def test_position_size_keeps_modeled_fees_and_slippage_inside_budget(self):
+        qty = position_size(
+            equity=1_000,
+            risk_fraction=0.01,
+            entry=100,
+            stop=99,
+            qty_step=0.001,
+            min_qty=0.001,
+            max_qty=1_000,
+            side="Buy",
+            taker_fee_rate=0.00055,
+            slippage_rate=0.00020,
+        )
+
+        all_in_loss = qty * (
+            1.0 + 100 * 0.00055 + 99 * (0.00055 + 0.00020)
+        )
+        self.assertLessEqual(all_in_loss, 10.0)
+        self.assertLess(qty, 10.0)
+
     def test_below_minimum_returns_zero(self):
         qty = position_size(100, 0.001, 85_300, 80_000, 0.001, 0.001, 100)
         self.assertEqual(qty, 0.0)
